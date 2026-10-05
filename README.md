@@ -1,1 +1,117 @@
 # mod-questie-bridge
+
+An optional AzerothCore module that sends live game event activity and worldstate
+information to [Questie-335](https://github.com/Aldori15/Questie). Questie can use
+this information to update available quest icons when events start or stop,
+including events started manually with GM commands outside their calendar dates.
+
+**This module requires a version of Questie-335 containing the matching client
+bridge integration. Installing the server module alone does not add this feature
+to older Questie releases.**
+
+## Features
+
+- Live holiday activity, including manual GM starts and stops.
+- Stranglethorn Fishing Extravaganza turn-ins and winner-dependent availability
+  for Master Angler and Apprentice Angler.
+- Darkmoon Faire activity and questgiver locations in Mulgore, Elwynn Forest,
+  and Terokkar Forest.
+- Scourge Invasion worldstate activity.
+- Isle of Quel'Danas quest unlocks, including independent construction projects.
+
+The module reports server state; it does not start events or change quest
+requirements. Questie's visibility options, character requirements, and manually
+hidden quests still apply. Scourge Invasion and Sun's Reach quests require their
+respective visibility options to be enabled in Questie.
+
+## Requirements
+
+- An AzerothCore WotLK server and access to rebuild worldserver.
+- World of Warcraft client version 3.3.5a (12340).
+- [Questie-335](https://github.com/Aldori15/Questie), with the client bridge changes
+  installed on each player who wants this feature.
+
+No SQL installation, Playerbots module, Lua scripting engine, or client executable
+patch is required.
+
+## Installation
+
+1. Download this repository into your AzerothCore source directory as
+   `modules/mod-questie-bridge`. Alternatively, run this command from the
+   AzerothCore source directory:
+
+   ```sh
+   git clone https://github.com/Aldori15/mod-questie-bridge.git modules/mod-questie-bridge
+   ```
+
+2. Rerun CMake and rebuild source.
+
+3. Copy `QuestieBridge.conf.dist` to `QuestieBridge.conf` in your server's
+   `configs/modules` directory.
+
+4. Restart worldserver.
+
+5. Install the matching client changes from the
+   [Questie repository](https://github.com/Aldori15/Questie). Extract the addon into
+   `Interface/AddOns/Questie-335`, then log in or run `/reload`.
+
+6. Run `/qserver` in game. A connected bridge reports `Live state` and the
+   `EVENTS`, `QUELDANAS`, `SCOURGE`, and `VALUES` capabilities with the default
+   configuration.
+
+## Configuration
+
+All options default to `1` (enabled). Set an option to `0` to disable it.
+
+```ini
+QuestieBridge.Enabled = 1
+QuestieBridge.Events = 1
+QuestieBridge.WorldStates = 1
+QuestieBridge.Progress = 1
+```
+
+- `Enabled`: enables the entire bridge.
+- `Events`: reports the game-event catalog, holiday stages, and actual activity.
+- `WorldStates`: provides requested persistent worldstate values, including the
+  fishing winner flag.
+- `Progress`: reports public Scourge Invasion and Quel'Danas progress values.
+
+Use `.reload config` after changing these options. Disabling `Progress` does not
+disable Quel'Danas quest unlock reporting, which uses `Events`.
+
+## Behavior and troubleshooting
+
+Fresh bridge information takes priority over calendar or manual availability
+assumptions for supported content. Confirmed inactive events hide that content
+even during a calendar window. If the bridge is unavailable, a capability is
+disabled, or its information expires, Questie uses its existing calendar and
+manual settings. Player preferences are not overwritten.
+
+Event and worldstate changes normally reach Questie within a few seconds. Live
+information expires after 30 seconds without a valid update. An unavailable
+bridge is checked approximately once per minute; `/reload` starts discovery
+again immediately.
+
+If `/qserver` is not recognized, confirm that your Questie version contains the
+client integration and that the addon finished loading. If it reports no fresh
+state, check that the module was included in your server build, worldserver was
+restarted, and `QuestieBridge.Enabled` is enabled.
+
+Servers without this module retain Questie's existing behavior. Players without
+the matching addon integration can continue playing normally.
+
+## Scope
+
+The event transport and persistent worldstate subscriptions are generic. Questie
+uses separate client integrations to interpret that data for supported quests.
+Custom quests, custom events, and additional scripted availability conditions may
+need matching integrations.
+
+## Links
+
+- [Questie-335](https://github.com/Aldori15/Questie)
+- [Module repository and issue tracker](https://github.com/Aldori15/mod-questie-bridge)
+
+## License
+
+GPL-2.0-or-later.

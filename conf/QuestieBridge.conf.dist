@@ -1,0 +1,21 @@
+###################################################################################################
+# Questie server bridge
+# Reports actual game-event activity and public world progress to Questie-335.
+# Reloadable with .reload config. No database installation is required.
+###################################################################################################
+
+# Enable the optional bridge. Disabling expires client state after 30 seconds.
+# Calendar detection/manual options remain the fallback; no settings are overwritten.
+QuestieBridge.Enabled = 1
+
+# Complete catalog of valid game events with live activity and holiday main stages.
+# Includes GM starts/stops and non-holiday events such as Quel'Danas unlocks.
+QuestieBridge.Events = 1
+
+# Allow up to 16 numeric persistent worldstate subscriptions per player.
+# Values use WorldState::getWorldState (missing keys have AC's default value 0).
+QuestieBridge.WorldStates = 1
+
+# Publish public Scourge Invasion and Quel'Danas UI progress, from AC's public API.
+# This is separate from persistent worldstate storage. No personal data is exposed.
+QuestieBridge.Progress = 1

@@ -20,6 +20,8 @@ including events started manually with GM commands outside their calendar dates.
 - Isle of Quel'Danas quest unlocks, including independent construction projects.
 - Authoritative daily and weekly quest pool selections, including custom pools.
   Questie hides inactive choices before players visit the questgiver.
+- Wintergrasp faction control and battle activity, with scripted quest availability
+  for attacking and defending factions, including indirect pooled quest variants.
 
 The module reports server state; it does not start events or change quest
 requirements. Questie's visibility options, character requirements, and manually
@@ -60,13 +62,16 @@ patch is required.
 6. Run `/qserver` in game. It shows the Questie version, client and server protocol
    versions, module version, and compiled AzerothCore revision. A connected bridge
    reports `Live state` and the
-   `EVENTS`, `HEARTBEAT`, `KALUAK`, `QUELDANAS`, `QUESTPOOLS`, `SCOURGE`, and `VALUES` capabilities
+   `EVENTS`, `HEARTBEAT`, `KALUAK`, `QUELDANAS`, `QUESTPOOLS`, `SCOURGE`, `VALUES`, and `WINTERGRASP` capabilities
    with the default configuration. It also lists every active event ID, including
    events started by GM commands or Lua scripts, followed by fishing and worldstate
    diagnostics. Snapshot and heartbeat counts cover the current addon session.
    Quest pool diagnostics report pool, member, and selected counts, plus the number
    of quests unknown to the installed Questie database. Use `/qserver pool 5678`
    to inspect the raid weekly pool, or substitute another pool ID.
+   Use `/qserver wintergrasp` to inspect faction control, battle activity, and
+   permitted/inactive scripted quest gates. Permitted does not mean the player
+   meets the quest's character requirements.
 
 ## Configuration
 
@@ -79,6 +84,7 @@ QuestieBridge.WorldStates = 1
 QuestieBridge.Progress = 1
 QuestieBridge.Kaluak = 1
 QuestieBridge.QuestPools = 1
+QuestieBridge.Wintergrasp = 1
 ```
 
 - `Enabled`: enables the entire bridge.
@@ -91,6 +97,9 @@ QuestieBridge.QuestPools = 1
 - `QuestPools`: reports loaded pool membership and live selected/inactive state.
   No quest ID list, SQL installation, or NPC visit is needed. Existing configuration
   files can add this option; the default is enabled when the option is absent.
+- `Wintergrasp`: reports public battlefield state and the stock questgiver script's
+  faction and pool gates. It reads PoolMgr independently of `QuestPools`, so the
+  eight indirect attacking variants work even when general pool reporting is disabled.
 
 Use `.reload config` after changing these options. Disabling `Progress` does not
 disable Quel'Danas quest unlock reporting, which uses `Events`.
@@ -154,9 +163,26 @@ completion, daily limits, holiday gates, and visibility preferences. Accepted
 quests and their objectives are retained when the pool rotates. Selection may
 include multiple quests or none; it does not assume one selected quest per pool.
 
-Scripted quest variants that indirectly follow a pool, such as Wintergrasp attack
-quests, require a separate integration. Quest pool state does not describe
-Wintergrasp faction control or every scripted quest-choice mechanism.
+The Wintergrasp integration matches the 26 faction-dependent quests in AC's
+`npc_wg_quest_giver` script. Eight attacking variants inherit the selection of
+their defending counterparts. The server evaluates these rules and sends explicit
+quest gates; Questie does not infer them from the calendar or duplicate the rule table.
+Quest pool diagnostics still describe selection alone, while Wintergrasp diagnostics
+include faction control. A selected defending pool member can therefore be unavailable
+when its faction is attacking.
+
+The script checks faction control between battles as well as during battles.
+Battle activity and battlefield enablement are reported for diagnostics, but are
+not invented as additional quest requirements. A battlefield that was not initialized
+reports unknown state and preserves fallback. Accepted quests retain their objectives
+when control changes. Other Wintergrasp quests keep their existing requirements.
+The bridge does not report moving NPC coordinates, a battle countdown, or custom script rules.
+Questie's NPC correction generator reads the stock C++ fortress and outside-camp
+spawn tables. Its client spawn filters use the reported defender to display the
+appropriate locations, including accepted quest notes and manual NPC notes.
+Unknown or expired ownership state restores the static locations. This uses the
+existing Wintergrasp capability and requires no additional server configuration.
+Unrelated scripted quest-choice mechanisms still need separate integrations.
 
 Snapshots are bounded to 4096 rows, including event and progress data. If the full
 pool catalog cannot fit, the module omits `QUESTPOOLS` rather than advertising a

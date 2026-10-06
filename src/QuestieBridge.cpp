@@ -16,6 +16,7 @@
 #include "WorldState.h"
 #include "QuestieBridgeKaluak.h"
 #include "QuestieBridgeProgress.h"
+#include "QuestieBridgeWintergrasp.h"
 
 #include <atomic>
 #include <charconv>
@@ -31,14 +32,15 @@
 namespace
 {
 constexpr char Envelope[] = "QSTSVR\t";
-constexpr uint32 ProtocolVersion = 5;
+constexpr uint32 ProtocolVersion = 6;
 constexpr char ModuleVersion[] = "0.1.0";
 constexpr uint32 Events = 1;
 constexpr uint32 Values = 2;
 constexpr uint32 Progress = 4;
 constexpr uint32 Kaluak = 8;
 constexpr uint32 QuestPools = 16;
-std::atomic<uint32> Capabilities{Events | Values | Progress | Kaluak | QuestPools};
+constexpr uint32 Wintergrasp = 32;
+std::atomic<uint32> Capabilities{Events | Values | Progress | Kaluak | QuestPools | Wintergrasp};
 std::atomic<bool> Dirty{false};
 using Clock = std::chrono::steady_clock;
 
@@ -212,6 +214,8 @@ public:
                 caps |= Kaluak;
             if (sConfigMgr->GetOption<bool>("QuestieBridge.QuestPools", true))
                 caps |= QuestPools;
+            if (sConfigMgr->GetOption<bool>("QuestieBridge.Wintergrasp", true))
+                caps |= Wintergrasp;
         }
         Capabilities.store(caps);
         Dirty.store(true);
@@ -280,6 +284,11 @@ public:
         {
             addCapability("KALUAK");
             commonRows.push_back("P:KA_FINISHED:" + GetQuestieBridgeKaluakFinished());
+        }
+        if (capabilities & Wintergrasp)
+        {
+            addCapability("WINTERGRASP");
+            AppendQuestieBridgeWintergrasp(commonRows);
         }
         if (capabilities & QuestPools)
         {

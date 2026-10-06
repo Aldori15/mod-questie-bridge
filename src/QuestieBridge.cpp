@@ -12,6 +12,7 @@
 #include "ScriptMgr.h"
 #include "WorldPacket.h"
 #include "WorldState.h"
+#include "QuestieBridgeKaluak.h"
 #include "QuestieBridgeProgress.h"
 
 #include <atomic>
@@ -27,16 +28,18 @@
 namespace
 {
 constexpr char Envelope[] = "QSTSVR\t";
-constexpr char RequestPrefix[] = "WATCH~2~";
+constexpr char RequestPrefix[] = "WATCH~";
 constexpr uint32 Events = 1;
 constexpr uint32 Values = 2;
 constexpr uint32 Progress = 4;
-std::atomic<uint32> Capabilities{Events | Values | Progress};
+constexpr uint32 Kaluak = 8;
+std::atomic<uint32> Capabilities{Events | Values | Progress | Kaluak};
 std::atomic<bool> Dirty{false};
 using Clock = std::chrono::steady_clock;
 
 struct Subscriber
 {
+    char Protocol = '2';
     std::string Token;
     std::vector<uint32> WorldStates;
     Clock::time_point LastRequest;
@@ -48,14 +51,19 @@ struct Subscriber
 std::mutex SubscriberMutex;
 std::map<ObjectGuid, Subscriber> Subscribers;
 
-bool ParseRequest(std::string const& payload, std::string& token, std::vector<uint32>& ids)
+bool ParseRequest(std::string const& payload, char& protocol, std::string& token, std::vector<uint32>& ids)
 {
-    if (payload.size() > 240 || payload.compare(0, sizeof(RequestPrefix) - 1, RequestPrefix) != 0)
+    if (payload.size() > 240 || payload.size() < 9
+        || payload.compare(0, sizeof(RequestPrefix) - 1, RequestPrefix) != 0)
         return false;
-    auto const separator = payload.find('~', sizeof(RequestPrefix) - 1);
+    protocol = payload[sizeof(RequestPrefix) - 1];
+    if ((protocol != '2' && protocol != '3') || payload[sizeof(RequestPrefix)] != '~')
+        return false;
+    auto const tokenStart = sizeof(RequestPrefix) + 1;
+    auto const separator = payload.find('~', tokenStart);
     if (separator == std::string::npos)
         return false;
-    token = payload.substr(sizeof(RequestPrefix) - 1, separator - (sizeof(RequestPrefix) - 1));
+    token = payload.substr(tokenStart, separator - tokenStart);
     if (token.empty() || token.size() > 32
         || token.find_first_not_of("abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789")
             != std::string::npos)
@@ -108,7 +116,8 @@ void SendSnapshot(Player* player, Subscriber& subscriber, std::string const& cap
     }
     if (!part.empty())
         parts.push_back(part);
-    std::string const header = "~2~" + subscriber.Token + '~' + std::to_string(++subscriber.Sequence);
+    std::string const header = std::string("~") + subscriber.Protocol + '~' + subscriber.Token
+        + '~' + std::to_string(++subscriber.Sequence);
     Send(player, "BEGIN" + header + '~' + caps + '~' + std::to_string(rows.size())
         + '~' + std::to_string(parts.size()));
     for (std::size_t index = 0; index < parts.size(); ++index)
@@ -133,6 +142,8 @@ public:
                 caps |= Values;
             if (sConfigMgr->GetOption<bool>("QuestieBridge.Progress", true))
                 caps |= Progress;
+            if (sConfigMgr->GetOption<bool>("QuestieBridge.Kaluak", true))
+                caps |= Kaluak;
         }
         Capabilities.store(caps);
         Dirty.store(true);
@@ -196,6 +207,7 @@ public:
             addCapability("QUELDANAS");
             AppendQuestieBridgeProgress(commonRows);
         }
+        std::string const kaluak = (capabilities & Kaluak) ? GetQuestieBridgeKaluakFinished() : "?";
         for (auto it = Subscribers.begin(); it != Subscribers.end();)
         {
             Subscriber& subscriber = it->second;
@@ -209,16 +221,26 @@ public:
             if (dirty || now - subscriber.LastSend >= std::chrono::seconds(2) || subscriber.Previous.empty())
             {
                 auto rows = commonRows;
+                auto subscriberCaps = caps;
+                // Protocol 2 clients reject unknown capabilities/rows. Keep their
+                // existing snapshot unchanged while protocol 3 opts into NPC state.
+                if ((capabilities & Kaluak) && subscriber.Protocol == '3')
+                {
+                    if (!subscriberCaps.empty())
+                        subscriberCaps += ',';
+                    subscriberCaps += "KALUAK";
+                    rows.push_back("P:KA_FINISHED:" + kaluak);
+                }
                 if (capabilities & Values)
                     for (uint32 id : subscriber.WorldStates)
                         rows.push_back("W:" + std::to_string(id) + ':'
                             + std::to_string(sWorldState->getWorldState(id)));
-                std::string signature = caps;
+                std::string signature = subscriberCaps;
                 for (std::string const& row : rows)
                     signature += ';' + row;
                 if (signature != subscriber.Previous || now - subscriber.LastSend >= std::chrono::seconds(10))
                 {
-                    SendSnapshot(player, subscriber, caps, rows);
+                    SendSnapshot(player, subscriber, subscriberCaps, rows);
                     subscriber.Previous = std::move(signature);
                     subscriber.LastSend = now;
                 }
@@ -254,8 +276,9 @@ public:
         if (!Capabilities.load() || !player || receiver != player || type != CHAT_MSG_WHISPER)
             return false;
         std::string token;
+        char protocol = '2';
         std::vector<uint32> ids;
-        if (!ParseRequest(message.substr(sizeof(Envelope) - 1), token, ids))
+        if (!ParseRequest(message.substr(sizeof(Envelope) - 1), protocol, token, ids))
             return false;
         std::lock_guard<std::mutex> guard(SubscriberMutex);
         auto const now = Clock::now();
@@ -263,6 +286,7 @@ public:
         if (found != Subscribers.end() && now - found->second.LastRequest < std::chrono::seconds(2))
             return false;
         Subscriber& subscriber = Subscribers[player->GetGUID()];
+        subscriber.Protocol = protocol;
         subscriber.Token = std::move(token);
         subscriber.WorldStates = std::move(ids);
         subscriber.LastRequest = now;
@@ -280,6 +304,7 @@ public:
 
 void AddSC_questie_bridge()
 {
+    RegisterQuestieBridgeKaluak();
     new QuestieBridgeWorldScript();
     new QuestieBridgeEventScript();
     new QuestieBridgePlayerScript();

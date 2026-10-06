@@ -5,18 +5,18 @@ information to [Questie-335](https://github.com/Aldori15/Questie). Questie can u
 this information to update available quest icons when events start or stop,
 including events started manually with GM commands outside their calendar dates.
 
-**This module requires a version of Questie-335 containing the matching client
-bridge integration. Installing the server module alone does not add this feature
-to older Questie releases.**
+**The bridge requires both this server module and the Questie client integration.**
 
 ## Features
 
 - Live holiday activity, including manual GM starts and stops.
 - Stranglethorn Fishing Extravaganza turn-ins and winner-dependent availability
   for Master Angler and Apprentice Angler.
+- Kalu'ak Fishing Derby availability: quest 24803 before Clearwater declares a
+  winner, and Better Luck Next Time (24806) afterward.
 - Darkmoon Faire activity and questgiver locations in Mulgore, Elwynn Forest,
-  and Terokkar Forest.
-- Scourge Invasion worldstate activity.
+  and Terokkar Forest, including multiple locations active at the same time.
+- Scourge Invasion activity.
 - Isle of Quel'Danas quest unlocks, including independent construction projects.
 
 The module reports server state; it does not start events or change quest
@@ -51,13 +51,14 @@ patch is required.
 
 4. Restart worldserver.
 
-5. Install the matching client changes from the
-   [Questie repository](https://github.com/Aldori15/Questie). Extract the addon into
-   `Interface/AddOns/Questie-335`, then log in or run `/reload`.
+5. Install Questie with the client bridge integration from the
+   [Questie repository](https://github.com/Aldori15/Questie). Extract the addon
+   into `Interface/AddOns/Questie-335`, then log in or run `/reload`.
 
 6. Run `/qserver` in game. A connected bridge reports `Live state` and the
-   `EVENTS`, `QUELDANAS`, `SCOURGE`, and `VALUES` capabilities with the default
-   configuration.
+   `EVENTS`, `KALUAK`, `QUELDANAS`, `SCOURGE`, and `VALUES` capabilities with the default
+   configuration. It also lists every active event ID, including events started
+   by GM commands or Lua scripts, followed by fishing and worldstate diagnostics.
 
 ## Configuration
 
@@ -68,6 +69,7 @@ QuestieBridge.Enabled = 1
 QuestieBridge.Events = 1
 QuestieBridge.WorldStates = 1
 QuestieBridge.Progress = 1
+QuestieBridge.Kaluak = 1
 ```
 
 - `Enabled`: enables the entire bridge.
@@ -75,6 +77,8 @@ QuestieBridge.Progress = 1
 - `WorldStates`: provides requested persistent worldstate values, including the
   fishing winner flag.
 - `Progress`: reports public Scourge Invasion and Quel'Danas progress values.
+- `Kaluak`: observes Elder Clearwater's in-memory winner flag without modifying
+  his AI, quest rewards, or the event schedule.
 
 Use `.reload config` after changing these options. Disabling `Progress` does not
 disable Quel'Danas quest unlock reporting, which uses `Events`.

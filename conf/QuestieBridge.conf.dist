@@ -19,3 +19,7 @@ QuestieBridge.WorldStates = 1
 # Publish public Scourge Invasion and Quel'Danas UI progress, from AC's public API.
 # This is separate from persistent worldstate storage. No personal data is exposed.
 QuestieBridge.Progress = 1
+
+# Observe Elder Clearwater's NPC AI winner flag for the Kalu'ak Fishing Derby.
+# Unknown/unloaded NPC state keeps Questie's calendar fallback. Protocol 3 clients only.
+QuestieBridge.Kaluak = 1

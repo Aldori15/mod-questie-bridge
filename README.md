@@ -55,7 +55,9 @@ patch is required.
    [Questie repository](https://github.com/Aldori15/Questie). Extract the addon
    into `Interface/AddOns/Questie-335`, then log in or run `/reload`.
 
-6. Run `/qserver` in game. A connected bridge reports `Live state` and the
+6. Run `/qserver` in game. It shows the Questie version, client and server protocol
+   versions, module version, and compiled AzerothCore revision. A connected bridge
+   reports `Live state` and the
    `EVENTS`, `HEARTBEAT`, `KALUAK`, `QUELDANAS`, `SCOURGE`, and `VALUES` capabilities
    with the default configuration. It also lists every active event ID, including
    events started by GM commands or Lua scripts, followed by fishing and worldstate
@@ -109,6 +111,17 @@ only for a matching, unexpired snapshot. A missed state change or failed renewal
 requests a complete replacement; a heartbeat alone cannot restore expired state.
 Use `/qserver` to verify that heartbeat counts grow while snapshot counts stay
 steady during idle periods. No additional configuration is required.
+
+At each full connection request, the server sends a small diagnostic handshake.
+Its format is independent of the state protocol, so incompatible builds can report
+their protocol versions without exchanging quest state. `/qserver` distinguishes
+a protocol mismatch, a disabled bridge, and no response. There is no protocol
+downgrade. Diagnostic replies cannot establish or extend quest-state freshness.
+
+The module version is a release label maintained in the module source. The AC
+revision identifies the compiled core revision, not uncommitted module changes.
+The reported handshake age is separate from the live-state age and normally grows
+while heartbeats keep an unchanged snapshot fresh.
 
 If `/qserver` is not recognized, confirm that your Questie version contains the
 client integration and that the addon finished loading. If it reports no fresh

@@ -6,6 +6,7 @@
 #include "Chat.h"
 #include "Config.h"
 #include "GameEventMgr.h"
+#include "GitRevision.h"
 #include "Log.h"
 #include "ObjectAccessor.h"
 #include "Player.h"
@@ -22,14 +23,15 @@
 #include <map>
 #include <mutex>
 #include <string>
+#include <string_view>
 #include <utility>
 #include <vector>
 
 namespace
 {
 constexpr char Envelope[] = "QSTSVR\t";
-constexpr char ProtocolVersion = '4';
-constexpr char RequestPrefix[] = "WATCH~";
+constexpr uint32 ProtocolVersion = 4;
+constexpr char ModuleVersion[] = "0.1.0";
 constexpr uint32 Events = 1;
 constexpr uint32 Values = 2;
 constexpr uint32 Progress = 4;
@@ -52,15 +54,20 @@ struct Subscriber
 
 std::mutex SubscriberMutex;
 std::map<ObjectGuid, Subscriber> Subscribers;
+std::map<ObjectGuid, Clock::time_point> LastDiagnosticReply;
 
-bool ParseRequest(std::string const& payload, std::string& token, std::vector<uint32>& ids)
+bool ParseHeader(std::string const& payload, std::string_view prefix, uint32& protocol,
+    std::string& token, std::size_t& body)
 {
-    if (payload.size() > 240 || payload.size() < 9
-        || payload.compare(0, sizeof(RequestPrefix) - 1, RequestPrefix) != 0)
+    if (payload.size() > 240 || payload.compare(0, prefix.size(), prefix) != 0)
         return false;
-    if (payload[sizeof(RequestPrefix) - 1] != ProtocolVersion || payload[sizeof(RequestPrefix)] != '~')
+    auto const versionEnd = payload.find('~', prefix.size());
+    if (versionEnd == std::string::npos || versionEnd == prefix.size() || payload[prefix.size()] == '0')
         return false;
-    auto const tokenStart = sizeof(RequestPrefix) + 1;
+    auto const parsed = std::from_chars(payload.data() + prefix.size(), payload.data() + versionEnd, protocol);
+    if (parsed.ec != std::errc() || parsed.ptr != payload.data() + versionEnd || protocol == 0 || protocol > 65535)
+        return false;
+    auto const tokenStart = versionEnd + 1;
     auto const separator = payload.find('~', tokenStart);
     if (separator == std::string::npos)
         return false;
@@ -69,9 +76,14 @@ bool ParseRequest(std::string const& payload, std::string& token, std::vector<ui
         || token.find_first_not_of("abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789")
             != std::string::npos)
         return false;
+    body = separator + 1;
+    return true;
+}
 
+bool ParseRequest(std::string const& payload, std::size_t body, std::vector<uint32>& ids)
+{
     // Decimal uint32 subscriptions only; no SQL, arbitrary commands or private player data.
-    auto first = payload.data() + separator + 1;
+    auto first = payload.data() + body;
     auto const end = payload.data() + payload.size();
     while (first != end)
     {
@@ -91,23 +103,9 @@ bool ParseRequest(std::string const& payload, std::string& token, std::vector<ui
     return true;
 }
 
-bool ParseAcknowledgement(std::string const& payload, std::string& token, uint64& sequence)
+bool ParseAcknowledgement(std::string const& payload, std::size_t body, uint64& sequence)
 {
-    constexpr char prefix[] = "ACK~";
-    if (payload.size() > 240 || payload.size() < 7 || payload.compare(0, sizeof(prefix) - 1, prefix) != 0)
-        return false;
-    if (payload[sizeof(prefix) - 1] != ProtocolVersion || payload[sizeof(prefix)] != '~')
-        return false;
-    auto const tokenStart = sizeof(prefix) + 1;
-    auto const separator = payload.find('~', tokenStart);
-    if (separator == std::string::npos)
-        return false;
-    token = payload.substr(tokenStart, separator - tokenStart);
-    if (token.empty() || token.size() > 32
-        || token.find_first_not_of("abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789")
-            != std::string::npos)
-        return false;
-    auto const first = payload.data() + separator + 1;
+    auto const first = payload.data() + body;
     auto const end = payload.data() + payload.size();
     auto const result = std::from_chars(first, end, sequence);
     // Match the client's exact integer range; never acknowledge an unreceived snapshot.
@@ -120,6 +118,19 @@ void Send(Player* player, std::string const& payload)
     ChatHandler::BuildChatPacket(packet, CHAT_MSG_WHISPER, LANG_ADDON, player, player,
         std::string(Envelope) + payload);
     player->SendDirectMessage(&packet);
+}
+
+void SendInfo(Player* player, std::string const& token, char const* status)
+{
+    std::string revision = GitRevision::GetHash();
+    if (revision.empty() || revision.size() > 64
+        || revision.find_first_not_of("abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789._+-")
+            != std::string::npos)
+        revision = "unknown";
+    // INFO has its own fixed envelope so an incompatible state protocol can still
+    // report the expected version. It never carries or renews quest availability.
+    Send(player, "INFO~1~" + token + '~' + std::to_string(ProtocolVersion) + '~' + ModuleVersion
+        + '~' + revision + '~' + status);
 }
 
 void SendSnapshot(Player* player, Subscriber& subscriber, std::string const& caps,
@@ -140,7 +151,7 @@ void SendSnapshot(Player* player, Subscriber& subscriber, std::string const& cap
     }
     if (!part.empty())
         parts.push_back(part);
-    std::string const header = std::string("~") + ProtocolVersion + '~' + subscriber.Token
+    std::string const header = "~" + std::to_string(ProtocolVersion) + '~' + subscriber.Token
         + '~' + std::to_string(++subscriber.Sequence);
     subscriber.SnapshotSequence = subscriber.Sequence;
     Send(player, "BEGIN" + header + '~' + caps + '~' + std::to_string(rows.size())
@@ -152,7 +163,7 @@ void SendSnapshot(Player* player, Subscriber& subscriber, std::string const& cap
 
 void SendHeartbeat(Player* player, Subscriber& subscriber)
 {
-    Send(player, std::string("ALIVE~") + ProtocolVersion + '~' + subscriber.Token
+    Send(player, "ALIVE~" + std::to_string(ProtocolVersion) + '~' + subscriber.Token
         + '~' + std::to_string(++subscriber.Sequence)
         + '~' + std::to_string(subscriber.SnapshotSequence));
 }
@@ -308,15 +319,21 @@ public:
     {
         if (language != LANG_ADDON || message.compare(0, sizeof(Envelope) - 1, Envelope) != 0)
             return true;
-        if (!Capabilities.load() || !player || receiver != player || type != CHAT_MSG_WHISPER)
+        if (!player || receiver != player || type != CHAT_MSG_WHISPER)
             return false;
         std::string token;
         uint64 acknowledged = 0;
+        uint32 requestedProtocol = 0;
+        std::size_t body = 0;
         std::vector<uint32> ids;
         std::string const payload = message.substr(sizeof(Envelope) - 1);
         bool const renewal = payload.compare(0, 4, "ACK~") == 0;
-        bool const valid = renewal ? ParseAcknowledgement(payload, token, acknowledged)
-            : ParseRequest(payload, token, ids);
+        if (!ParseHeader(payload, renewal ? "ACK~" : "WATCH~", requestedProtocol, token, body))
+            return false;
+        bool const compatible = requestedProtocol == ProtocolVersion;
+        // An incompatible WATCH receives diagnostics only; its body is not interpreted.
+        bool const valid = renewal ? compatible && ParseAcknowledgement(payload, body, acknowledged)
+            : !compatible || ParseRequest(payload, body, ids);
         if (!valid)
             return false;
         std::lock_guard<std::mutex> guard(SubscriberMutex);
@@ -326,13 +343,22 @@ public:
             return false;
         if (renewal)
         {
-            if (found == Subscribers.end() || found->second.Token != token)
+            if (!Capabilities.load() || found == Subscribers.end() || found->second.Token != token)
                 return false;
             Subscriber& subscriber = found->second;
             subscriber.LastRequest = now;
             subscriber.ReplyRequested = true;
             if (acknowledged != subscriber.SnapshotSequence)
                 subscriber.Previous.clear();
+            return false;
+        }
+        auto const previousInfo = LastDiagnosticReply.find(player->GetGUID());
+        if (previousInfo != LastDiagnosticReply.end() && now - previousInfo->second < std::chrono::seconds(2))
+            return false;
+        LastDiagnosticReply[player->GetGUID()] = now;
+        if (!compatible || !Capabilities.load())
+        {
+            SendInfo(player, token, compatible ? "DISABLED" : "MISMATCH");
             return false;
         }
         Subscriber& subscriber = Subscribers[player->GetGUID()];
@@ -342,6 +368,7 @@ public:
         subscriber.Previous.clear();
         subscriber.SnapshotSequence = 0;
         subscriber.ReplyRequested = true;
+        SendInfo(player, subscriber.Token, "READY");
         return false;
     }
 
@@ -349,6 +376,7 @@ public:
     {
         std::lock_guard<std::mutex> guard(SubscriberMutex);
         Subscribers.erase(player->GetGUID());
+        LastDiagnosticReply.erase(player->GetGUID());
     }
 };
 }

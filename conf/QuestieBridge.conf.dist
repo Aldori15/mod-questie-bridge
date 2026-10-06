@@ -21,5 +21,9 @@ QuestieBridge.WorldStates = 1
 QuestieBridge.Progress = 1
 
 # Observe Elder Clearwater's NPC AI winner flag for the Kalu'ak Fishing Derby.
-# Unknown/unloaded NPC state keeps Questie's calendar fallback. Protocol 3 clients only.
+# Unknown/unloaded NPC state keeps Questie's calendar fallback.
 QuestieBridge.Kaluak = 1
+
+# Report all loaded daily/weekly quest pool members and the server's selections.
+# Includes custom pools; inactive members are hidden before visiting a questgiver.
+QuestieBridge.QuestPools = 1

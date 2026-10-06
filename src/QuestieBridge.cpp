@@ -10,6 +10,7 @@
 #include "Log.h"
 #include "ObjectAccessor.h"
 #include "Player.h"
+#include "PoolMgr.h"
 #include "ScriptMgr.h"
 #include "WorldPacket.h"
 #include "WorldState.h"
@@ -30,13 +31,14 @@
 namespace
 {
 constexpr char Envelope[] = "QSTSVR\t";
-constexpr uint32 ProtocolVersion = 4;
+constexpr uint32 ProtocolVersion = 5;
 constexpr char ModuleVersion[] = "0.1.0";
 constexpr uint32 Events = 1;
 constexpr uint32 Values = 2;
 constexpr uint32 Progress = 4;
 constexpr uint32 Kaluak = 8;
-std::atomic<uint32> Capabilities{Events | Values | Progress | Kaluak};
+constexpr uint32 QuestPools = 16;
+std::atomic<uint32> Capabilities{Events | Values | Progress | Kaluak | QuestPools};
 std::atomic<bool> Dirty{false};
 using Clock = std::chrono::steady_clock;
 
@@ -55,6 +57,27 @@ struct Subscriber
 std::mutex SubscriberMutex;
 std::map<ObjectGuid, Subscriber> Subscribers;
 std::map<ObjectGuid, Clock::time_point> LastDiagnosticReply;
+
+std::vector<std::string> GetQuestPoolRows()
+{
+    // Every accepted quest pool member has a creature or gameobject starter.
+    // Read loaded relations, then validate membership against PoolMgr. This also
+    // handles custom pools and relation reloads without a static list or SQL reads.
+    std::map<uint32, uint32> members;
+    auto collect = [&members](PooledQuestRelation const& relations)
+    {
+        for (auto const& relation : relations)
+            if (uint32 poolId = sPoolMgr->IsPartOfAPool<Quest>(relation.first))
+                members[relation.first] = poolId;
+    };
+    collect(sPoolMgr->mQuestCreatureRelation);
+    collect(sPoolMgr->mQuestGORelation);
+    std::vector<std::string> rows;
+    for (auto const& [questId, poolId] : members)
+        rows.push_back("Q:" + std::to_string(questId) + ':' + std::to_string(poolId)
+            + (sPoolMgr->IsSpawnedObject<Quest>(questId) ? ":1" : ":0"));
+    return rows;
+}
 
 bool ParseHeader(std::string const& payload, std::string_view prefix, uint32& protocol,
     std::string& token, std::size_t& body)
@@ -187,6 +210,8 @@ public:
                 caps |= Progress;
             if (sConfigMgr->GetOption<bool>("QuestieBridge.Kaluak", true))
                 caps |= Kaluak;
+            if (sConfigMgr->GetOption<bool>("QuestieBridge.QuestPools", true))
+                caps |= QuestPools;
         }
         Capabilities.store(caps);
         Dirty.store(true);
@@ -255,6 +280,17 @@ public:
         {
             addCapability("KALUAK");
             commonRows.push_back("P:KA_FINISHED:" + GetQuestieBridgeKaluakFinished());
+        }
+        if (capabilities & QuestPools)
+        {
+            auto const rows = GetQuestPoolRows();
+            // Reserve the maximum 16 per-player worldstate rows. Never send a
+            // partial pool catalog: omissions would make inactive choices unknown.
+            if (commonRows.size() + rows.size() + 16 <= 4096)
+            {
+                addCapability("QUESTPOOLS");
+                commonRows.insert(commonRows.end(), rows.begin(), rows.end());
+            }
         }
         for (auto it = Subscribers.begin(); it != Subscribers.end();)
         {

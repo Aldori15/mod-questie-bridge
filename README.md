@@ -18,6 +18,8 @@ including events started manually with GM commands outside their calendar dates.
   and Terokkar Forest, including multiple locations active at the same time.
 - Scourge Invasion activity.
 - Isle of Quel'Danas quest unlocks, including independent construction projects.
+- Authoritative daily and weekly quest pool selections, including custom pools.
+  Questie hides inactive choices before players visit the questgiver.
 
 The module reports server state; it does not start events or change quest
 requirements. Questie's visibility options, character requirements, and manually
@@ -58,10 +60,13 @@ patch is required.
 6. Run `/qserver` in game. It shows the Questie version, client and server protocol
    versions, module version, and compiled AzerothCore revision. A connected bridge
    reports `Live state` and the
-   `EVENTS`, `HEARTBEAT`, `KALUAK`, `QUELDANAS`, `SCOURGE`, and `VALUES` capabilities
+   `EVENTS`, `HEARTBEAT`, `KALUAK`, `QUELDANAS`, `QUESTPOOLS`, `SCOURGE`, and `VALUES` capabilities
    with the default configuration. It also lists every active event ID, including
    events started by GM commands or Lua scripts, followed by fishing and worldstate
    diagnostics. Snapshot and heartbeat counts cover the current addon session.
+   Quest pool diagnostics report pool, member, and selected counts, plus the number
+   of quests unknown to the installed Questie database. Use `/qserver pool 5678`
+   to inspect the raid weekly pool, or substitute another pool ID.
 
 ## Configuration
 
@@ -73,6 +78,7 @@ QuestieBridge.Events = 1
 QuestieBridge.WorldStates = 1
 QuestieBridge.Progress = 1
 QuestieBridge.Kaluak = 1
+QuestieBridge.QuestPools = 1
 ```
 
 - `Enabled`: enables the entire bridge.
@@ -82,6 +88,9 @@ QuestieBridge.Kaluak = 1
 - `Progress`: reports public Scourge Invasion and Quel'Danas progress values.
 - `Kaluak`: observes Elder Clearwater's in-memory winner flag without modifying
   his AI, quest rewards, or the event schedule.
+- `QuestPools`: reports loaded pool membership and live selected/inactive state.
+  No quest ID list, SQL installation, or NPC visit is needed. Existing configuration
+  files can add this option; the default is enabled when the option is absent.
 
 Use `.reload config` after changing these options. Disabling `Progress` does not
 disable Quel'Danas quest unlock reporting, which uses `Events`.
@@ -132,6 +141,26 @@ Servers without this module retain Questie's existing behavior. Players without
 the matching addon integration can continue playing normally.
 
 ## Scope
+
+Quest pool selection is read from AzerothCore's loaded PoolMgr state on the world
+thread. Membership is discovered from both creature and gameobject quest starters
+and verified against PoolMgr. Newly added pool members need no bridge code changes
+after the core loads them. Entirely new quests still require Questie database data;
+the bridge transports IDs and selection, not quest definitions or locations.
+
+Fresh selections override NPC/comms observations for those pool members. Questie
+keeps the observations for fallback and still applies character requirements,
+completion, daily limits, holiday gates, and visibility preferences. Accepted
+quests and their objectives are retained when the pool rotates. Selection may
+include multiple quests or none; it does not assume one selected quest per pool.
+
+Scripted quest variants that indirectly follow a pool, such as Wintergrasp attack
+quests, require a separate integration. Quest pool state does not describe
+Wintergrasp faction control or every scripted quest-choice mechanism.
+
+Snapshots are bounded to 4096 rows, including event and progress data. If the full
+pool catalog cannot fit, the module omits `QUESTPOOLS` rather than advertising a
+partial catalog. Questie's existing discovery/comms behavior then applies.
 
 The event transport and persistent worldstate subscriptions are generic. Questie
 uses separate client integrations to interpret that data for supported quests.

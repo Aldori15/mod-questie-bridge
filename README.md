@@ -18,6 +18,9 @@ including events started manually with GM commands outside their calendar dates.
   and Terokkar Forest, including multiple locations active at the same time.
 - Scourge Invasion activity.
 - Isle of Quel'Danas quest unlocks, including independent construction projects.
+- World Progress in related Questie Journey details and hover tooltips: Sun's Reach
+  phase and reported unfinished-project percentages, plus Scourge activity, battles
+  won, and active-zone necropolis counts. Uses the existing `Progress` setting.
 - Authoritative daily and weekly quest pool selections, including custom pools.
   Questie hides inactive choices before players visit the questgiver.
 - Wintergrasp faction control and battle activity, with scripted quest availability

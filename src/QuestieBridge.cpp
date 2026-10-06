@@ -28,6 +28,7 @@
 namespace
 {
 constexpr char Envelope[] = "QSTSVR\t";
+constexpr char ProtocolVersion = '4';
 constexpr char RequestPrefix[] = "WATCH~";
 constexpr uint32 Events = 1;
 constexpr uint32 Values = 2;
@@ -39,7 +40,6 @@ using Clock = std::chrono::steady_clock;
 
 struct Subscriber
 {
-    char Protocol = '2';
     std::string Token;
     std::vector<uint32> WorldStates;
     Clock::time_point LastRequest;
@@ -53,13 +53,12 @@ struct Subscriber
 std::mutex SubscriberMutex;
 std::map<ObjectGuid, Subscriber> Subscribers;
 
-bool ParseRequest(std::string const& payload, char& protocol, std::string& token, std::vector<uint32>& ids)
+bool ParseRequest(std::string const& payload, std::string& token, std::vector<uint32>& ids)
 {
     if (payload.size() > 240 || payload.size() < 9
         || payload.compare(0, sizeof(RequestPrefix) - 1, RequestPrefix) != 0)
         return false;
-    protocol = payload[sizeof(RequestPrefix) - 1];
-    if ((protocol != '2' && protocol != '3' && protocol != '4') || payload[sizeof(RequestPrefix)] != '~')
+    if (payload[sizeof(RequestPrefix) - 1] != ProtocolVersion || payload[sizeof(RequestPrefix)] != '~')
         return false;
     auto const tokenStart = sizeof(RequestPrefix) + 1;
     auto const separator = payload.find('~', tokenStart);
@@ -94,13 +93,16 @@ bool ParseRequest(std::string const& payload, char& protocol, std::string& token
 
 bool ParseAcknowledgement(std::string const& payload, std::string& token, uint64& sequence)
 {
-    constexpr char prefix[] = "ACK~4~";
-    if (payload.size() > 240 || payload.compare(0, sizeof(prefix) - 1, prefix) != 0)
+    constexpr char prefix[] = "ACK~";
+    if (payload.size() > 240 || payload.size() < 7 || payload.compare(0, sizeof(prefix) - 1, prefix) != 0)
         return false;
-    auto const separator = payload.find('~', sizeof(prefix) - 1);
+    if (payload[sizeof(prefix) - 1] != ProtocolVersion || payload[sizeof(prefix)] != '~')
+        return false;
+    auto const tokenStart = sizeof(prefix) + 1;
+    auto const separator = payload.find('~', tokenStart);
     if (separator == std::string::npos)
         return false;
-    token = payload.substr(sizeof(prefix) - 1, separator - (sizeof(prefix) - 1));
+    token = payload.substr(tokenStart, separator - tokenStart);
     if (token.empty() || token.size() > 32
         || token.find_first_not_of("abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789")
             != std::string::npos)
@@ -138,7 +140,7 @@ void SendSnapshot(Player* player, Subscriber& subscriber, std::string const& cap
     }
     if (!part.empty())
         parts.push_back(part);
-    std::string const header = std::string("~") + subscriber.Protocol + '~' + subscriber.Token
+    std::string const header = std::string("~") + ProtocolVersion + '~' + subscriber.Token
         + '~' + std::to_string(++subscriber.Sequence);
     subscriber.SnapshotSequence = subscriber.Sequence;
     Send(player, "BEGIN" + header + '~' + caps + '~' + std::to_string(rows.size())
@@ -150,7 +152,8 @@ void SendSnapshot(Player* player, Subscriber& subscriber, std::string const& cap
 
 void SendHeartbeat(Player* player, Subscriber& subscriber)
 {
-    Send(player, "ALIVE~4~" + subscriber.Token + '~' + std::to_string(++subscriber.Sequence)
+    Send(player, std::string("ALIVE~") + ProtocolVersion + '~' + subscriber.Token
+        + '~' + std::to_string(++subscriber.Sequence)
         + '~' + std::to_string(subscriber.SnapshotSequence));
 }
 
@@ -236,7 +239,12 @@ public:
             addCapability("QUELDANAS");
             AppendQuestieBridgeProgress(commonRows);
         }
-        std::string const kaluak = (capabilities & Kaluak) ? GetQuestieBridgeKaluakFinished() : "?";
+        addCapability("HEARTBEAT");
+        if (capabilities & Kaluak)
+        {
+            addCapability("KALUAK");
+            commonRows.push_back("P:KA_FINISHED:" + GetQuestieBridgeKaluakFinished());
+        }
         for (auto it = Subscribers.begin(); it != Subscribers.end();)
         {
             Subscriber& subscriber = it->second;
@@ -251,34 +259,19 @@ public:
                 || subscriber.Previous.empty())
             {
                 auto rows = commonRows;
-                auto subscriberCaps = caps;
-                // Advertise only features understood by the requested protocol.
-                if (subscriber.Protocol == '4')
-                {
-                    if (!subscriberCaps.empty())
-                        subscriberCaps += ',';
-                    subscriberCaps += "HEARTBEAT";
-                }
-                if ((capabilities & Kaluak) && subscriber.Protocol != '2')
-                {
-                    if (!subscriberCaps.empty())
-                        subscriberCaps += ',';
-                    subscriberCaps += "KALUAK";
-                    rows.push_back("P:KA_FINISHED:" + kaluak);
-                }
                 if (capabilities & Values)
                     for (uint32 id : subscriber.WorldStates)
                         rows.push_back("W:" + std::to_string(id) + ':'
                             + std::to_string(sWorldState->getWorldState(id)));
-                std::string signature = subscriberCaps;
+                std::string signature = caps;
                 for (std::string const& row : rows)
                     signature += ';' + row;
                 bool const changed = signature != subscriber.Previous;
                 if (changed || subscriber.ReplyRequested || now - subscriber.LastSend >= std::chrono::seconds(10))
                 {
-                    if (changed || subscriber.Protocol != '4')
+                    if (changed)
                     {
-                        SendSnapshot(player, subscriber, subscriberCaps, rows);
+                        SendSnapshot(player, subscriber, caps, rows);
                         subscriber.Previous = std::move(signature);
                     }
                     else
@@ -318,13 +311,12 @@ public:
         if (!Capabilities.load() || !player || receiver != player || type != CHAT_MSG_WHISPER)
             return false;
         std::string token;
-        char protocol = '2';
         uint64 acknowledged = 0;
         std::vector<uint32> ids;
         std::string const payload = message.substr(sizeof(Envelope) - 1);
         bool const renewal = payload.compare(0, 4, "ACK~") == 0;
         bool const valid = renewal ? ParseAcknowledgement(payload, token, acknowledged)
-            : ParseRequest(payload, protocol, token, ids);
+            : ParseRequest(payload, token, ids);
         if (!valid)
             return false;
         std::lock_guard<std::mutex> guard(SubscriberMutex);
@@ -334,7 +326,7 @@ public:
             return false;
         if (renewal)
         {
-            if (found == Subscribers.end() || found->second.Protocol != '4' || found->second.Token != token)
+            if (found == Subscribers.end() || found->second.Token != token)
                 return false;
             Subscriber& subscriber = found->second;
             subscriber.LastRequest = now;
@@ -344,7 +336,6 @@ public:
             return false;
         }
         Subscriber& subscriber = Subscribers[player->GetGUID()];
-        subscriber.Protocol = protocol;
         subscriber.Token = std::move(token);
         subscriber.WorldStates = std::move(ids);
         subscriber.LastRequest = now;

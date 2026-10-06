@@ -56,9 +56,10 @@ patch is required.
    into `Interface/AddOns/Questie-335`, then log in or run `/reload`.
 
 6. Run `/qserver` in game. A connected bridge reports `Live state` and the
-   `EVENTS`, `KALUAK`, `QUELDANAS`, `SCOURGE`, and `VALUES` capabilities with the default
-   configuration. It also lists every active event ID, including events started
-   by GM commands or Lua scripts, followed by fishing and worldstate diagnostics.
+   `EVENTS`, `HEARTBEAT`, `KALUAK`, `QUELDANAS`, `SCOURGE`, and `VALUES` capabilities
+   with the default configuration. It also lists every active event ID, including
+   events started by GM commands or Lua scripts, followed by fishing and worldstate
+   diagnostics. Snapshot and heartbeat counts cover the current addon session.
 
 ## Configuration
 
@@ -95,6 +96,19 @@ Event and worldstate changes normally reach Questie within a few seconds. Live
 information expires after 30 seconds without a valid update. An unavailable
 bridge is checked approximately once per minute; `/reload` starts discovery
 again immediately.
+
+The server sends a complete snapshot when Questie connects, subscriptions change,
+or reported state changes. While state stays unchanged, it sends a small
+heartbeat approximately every 10 seconds. Questie acknowledges its current
+snapshot approximately every 20 seconds to renew the server subscription. A
+renewal can also receive a heartbeat reply. This reduces repeated addon messages
+and client snapshot processing; server state polling continues.
+
+Each heartbeat identifies the complete snapshot it confirms. Questie accepts it
+only for a matching, unexpired snapshot. A missed state change or failed renewal
+requests a complete replacement; a heartbeat alone cannot restore expired state.
+Use `/qserver` to verify that heartbeat counts grow while snapshot counts stay
+steady during idle periods. No additional configuration is required.
 
 If `/qserver` is not recognized, confirm that your Questie version contains the
 client integration and that the addon finished loading. If it reports no fresh

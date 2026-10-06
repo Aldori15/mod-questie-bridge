@@ -45,6 +45,8 @@ struct Subscriber
     Clock::time_point LastRequest;
     Clock::time_point LastSend;
     uint64 Sequence = 0;
+    uint64 SnapshotSequence = 0;
+    bool ReplyRequested = false;
     std::string Previous;
 };
 
@@ -57,7 +59,7 @@ bool ParseRequest(std::string const& payload, char& protocol, std::string& token
         || payload.compare(0, sizeof(RequestPrefix) - 1, RequestPrefix) != 0)
         return false;
     protocol = payload[sizeof(RequestPrefix) - 1];
-    if ((protocol != '2' && protocol != '3') || payload[sizeof(RequestPrefix)] != '~')
+    if ((protocol != '2' && protocol != '3' && protocol != '4') || payload[sizeof(RequestPrefix)] != '~')
         return false;
     auto const tokenStart = sizeof(RequestPrefix) + 1;
     auto const separator = payload.find('~', tokenStart);
@@ -90,6 +92,26 @@ bool ParseRequest(std::string const& payload, char& protocol, std::string& token
     return true;
 }
 
+bool ParseAcknowledgement(std::string const& payload, std::string& token, uint64& sequence)
+{
+    constexpr char prefix[] = "ACK~4~";
+    if (payload.size() > 240 || payload.compare(0, sizeof(prefix) - 1, prefix) != 0)
+        return false;
+    auto const separator = payload.find('~', sizeof(prefix) - 1);
+    if (separator == std::string::npos)
+        return false;
+    token = payload.substr(sizeof(prefix) - 1, separator - (sizeof(prefix) - 1));
+    if (token.empty() || token.size() > 32
+        || token.find_first_not_of("abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789")
+            != std::string::npos)
+        return false;
+    auto const first = payload.data() + separator + 1;
+    auto const end = payload.data() + payload.size();
+    auto const result = std::from_chars(first, end, sequence);
+    // Match the client's exact integer range; never acknowledge an unreceived snapshot.
+    return result.ec == std::errc() && result.ptr == end && sequence > 0 && sequence <= 9007199254740991ULL;
+}
+
 void Send(Player* player, std::string const& payload)
 {
     WorldPacket packet;
@@ -118,11 +140,18 @@ void SendSnapshot(Player* player, Subscriber& subscriber, std::string const& cap
         parts.push_back(part);
     std::string const header = std::string("~") + subscriber.Protocol + '~' + subscriber.Token
         + '~' + std::to_string(++subscriber.Sequence);
+    subscriber.SnapshotSequence = subscriber.Sequence;
     Send(player, "BEGIN" + header + '~' + caps + '~' + std::to_string(rows.size())
         + '~' + std::to_string(parts.size()));
     for (std::size_t index = 0; index < parts.size(); ++index)
         Send(player, "PART" + header + '~' + std::to_string(index + 1) + '~' + parts[index]);
     Send(player, "END" + header);
+}
+
+void SendHeartbeat(Player* player, Subscriber& subscriber)
+{
+    Send(player, "ALIVE~4~" + subscriber.Token + '~' + std::to_string(++subscriber.Sequence)
+        + '~' + std::to_string(subscriber.SnapshotSequence));
 }
 
 class QuestieBridgeWorldScript final : public WorldScript
@@ -218,13 +247,19 @@ public:
                 continue;
             }
             // Polling also observes worldstate changes for which AC has no universal hook.
-            if (dirty || now - subscriber.LastSend >= std::chrono::seconds(2) || subscriber.Previous.empty())
+            if (dirty || subscriber.ReplyRequested || now - subscriber.LastSend >= std::chrono::seconds(2)
+                || subscriber.Previous.empty())
             {
                 auto rows = commonRows;
                 auto subscriberCaps = caps;
-                // Protocol 2 clients reject unknown capabilities/rows. Keep their
-                // existing snapshot unchanged while protocol 3 opts into NPC state.
-                if ((capabilities & Kaluak) && subscriber.Protocol == '3')
+                // Advertise only features understood by the requested protocol.
+                if (subscriber.Protocol == '4')
+                {
+                    if (!subscriberCaps.empty())
+                        subscriberCaps += ',';
+                    subscriberCaps += "HEARTBEAT";
+                }
+                if ((capabilities & Kaluak) && subscriber.Protocol != '2')
                 {
                     if (!subscriberCaps.empty())
                         subscriberCaps += ',';
@@ -238,11 +273,18 @@ public:
                 std::string signature = subscriberCaps;
                 for (std::string const& row : rows)
                     signature += ';' + row;
-                if (signature != subscriber.Previous || now - subscriber.LastSend >= std::chrono::seconds(10))
+                bool const changed = signature != subscriber.Previous;
+                if (changed || subscriber.ReplyRequested || now - subscriber.LastSend >= std::chrono::seconds(10))
                 {
-                    SendSnapshot(player, subscriber, subscriberCaps, rows);
-                    subscriber.Previous = std::move(signature);
+                    if (changed || subscriber.Protocol != '4')
+                    {
+                        SendSnapshot(player, subscriber, subscriberCaps, rows);
+                        subscriber.Previous = std::move(signature);
+                    }
+                    else
+                        SendHeartbeat(player, subscriber);
                     subscriber.LastSend = now;
+                    subscriber.ReplyRequested = false;
                 }
             }
             ++it;
@@ -277,20 +319,38 @@ public:
             return false;
         std::string token;
         char protocol = '2';
+        uint64 acknowledged = 0;
         std::vector<uint32> ids;
-        if (!ParseRequest(message.substr(sizeof(Envelope) - 1), protocol, token, ids))
+        std::string const payload = message.substr(sizeof(Envelope) - 1);
+        bool const renewal = payload.compare(0, 4, "ACK~") == 0;
+        bool const valid = renewal ? ParseAcknowledgement(payload, token, acknowledged)
+            : ParseRequest(payload, protocol, token, ids);
+        if (!valid)
             return false;
         std::lock_guard<std::mutex> guard(SubscriberMutex);
         auto const now = Clock::now();
         auto const found = Subscribers.find(player->GetGUID());
         if (found != Subscribers.end() && now - found->second.LastRequest < std::chrono::seconds(2))
             return false;
+        if (renewal)
+        {
+            if (found == Subscribers.end() || found->second.Protocol != '4' || found->second.Token != token)
+                return false;
+            Subscriber& subscriber = found->second;
+            subscriber.LastRequest = now;
+            subscriber.ReplyRequested = true;
+            if (acknowledged != subscriber.SnapshotSequence)
+                subscriber.Previous.clear();
+            return false;
+        }
         Subscriber& subscriber = Subscribers[player->GetGUID()];
         subscriber.Protocol = protocol;
         subscriber.Token = std::move(token);
         subscriber.WorldStates = std::move(ids);
         subscriber.LastRequest = now;
         subscriber.Previous.clear();
+        subscriber.SnapshotSequence = 0;
+        subscriber.ReplyRequested = true;
         return false;
     }
 

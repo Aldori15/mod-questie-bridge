@@ -15,6 +15,7 @@
 #include "WorldPacket.h"
 #include "WorldState.h"
 #include "QuestieBridgeKaluak.h"
+#include "QuestieBridgeICC.h"
 #include "QuestieBridgeProgress.h"
 #include "QuestieBridgeWintergrasp.h"
 
@@ -32,7 +33,7 @@
 namespace
 {
 constexpr char Envelope[] = "QSTSVR\t";
-constexpr uint32 ProtocolVersion = 6;
+constexpr uint32 ProtocolVersion = 7;
 constexpr char ModuleVersion[] = "0.1.0";
 constexpr uint32 Events = 1;
 constexpr uint32 Values = 2;
@@ -40,7 +41,8 @@ constexpr uint32 Progress = 4;
 constexpr uint32 Kaluak = 8;
 constexpr uint32 QuestPools = 16;
 constexpr uint32 Wintergrasp = 32;
-std::atomic<uint32> Capabilities{Events | Values | Progress | Kaluak | QuestPools | Wintergrasp};
+constexpr uint32 ICC = 64;
+std::atomic<uint32> Capabilities{Events | Values | Progress | Kaluak | QuestPools | Wintergrasp | ICC};
 std::atomic<bool> Dirty{false};
 using Clock = std::chrono::steady_clock;
 
@@ -216,6 +218,8 @@ public:
                 caps |= QuestPools;
             if (sConfigMgr->GetOption<bool>("QuestieBridge.Wintergrasp", true))
                 caps |= Wintergrasp;
+            if (sConfigMgr->GetOption<bool>("QuestieBridge.ICC", true))
+                caps |= ICC;
         }
         Capabilities.store(caps);
         Dirty.store(true);
@@ -293,9 +297,10 @@ public:
         if (capabilities & QuestPools)
         {
             auto const rows = GetQuestPoolRows();
-            // Reserve the maximum 16 per-player worldstate rows. Never send a
+            // Reserve per-player worldstate and ICC rows. Never send a
             // partial pool catalog: omissions would make inactive choices unknown.
-            if (commonRows.size() + rows.size() + 16 <= 4096)
+            std::size_t const reserved = 16 + ((capabilities & ICC) ? QuestieBridgeICCMaxRows : 0);
+            if (commonRows.size() + rows.size() + reserved <= 4096)
             {
                 addCapability("QUESTPOOLS");
                 commonRows.insert(commonRows.end(), rows.begin(), rows.end());
@@ -319,7 +324,14 @@ public:
                     for (uint32 id : subscriber.WorldStates)
                         rows.push_back("W:" + std::to_string(id) + ':'
                             + std::to_string(sWorldState->getWorldState(id)));
-                std::string signature = caps;
+                std::string playerCaps = caps;
+                if ((capabilities & ICC) && rows.size() + QuestieBridgeICCMaxRows <= 4096)
+                {
+                    playerCaps += (playerCaps.empty() ? "" : ",");
+                    playerCaps += "ICC";
+                    AppendQuestieBridgeICC(player, rows);
+                }
+                std::string signature = playerCaps;
                 for (std::string const& row : rows)
                     signature += ';' + row;
                 bool const changed = signature != subscriber.Previous;
@@ -327,7 +339,7 @@ public:
                 {
                     if (changed)
                     {
-                        SendSnapshot(player, subscriber, caps, rows);
+                        SendSnapshot(player, subscriber, playerCaps, rows);
                         subscriber.Previous = std::move(signature);
                     }
                     else
@@ -429,6 +441,7 @@ public:
 void AddSC_questie_bridge()
 {
     RegisterQuestieBridgeKaluak();
+    RegisterQuestieBridgeICC();
     new QuestieBridgeWorldScript();
     new QuestieBridgeEventScript();
     new QuestieBridgePlayerScript();

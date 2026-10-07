@@ -31,3 +31,7 @@ QuestieBridge.QuestPools = 1
 # Report Wintergrasp control/battle state and scripted attacker/defender quest gates.
 # Includes the eight attacking variants that inherit a defending pool selection.
 QuestieBridge.Wintergrasp = 1
+
+# Report the weekly quest family and unlocks in each player's current ICC raid instance.
+# Outside ICC, Questie keeps its existing behavior; no other lockouts are queried.
+QuestieBridge.ICC = 1

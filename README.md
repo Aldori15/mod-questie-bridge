@@ -7,6 +7,7 @@ Install both this server module and Questie-335 to use the bridge.
 ## Features
 
 - Holidays started or stopped by GM commands or server scripts, including simultaneous Darkmoon Faire locations.
+- Zalazane's Fall quests appear while the server event is active.
 - Stranglethorn Fishing Extravaganza and Kalu'ak Fishing Derby quests before and after a winner is declared.
 - Scourge Invasion activity and Isle of Quel'Danas quest unlocks.
 - The server's selected daily and weekly pool quests, before visiting the questgiver. Custom pools are supported.

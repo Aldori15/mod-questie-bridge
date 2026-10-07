@@ -1,205 +1,92 @@
 # mod-questie-bridge
 
-An optional AzerothCore module that sends live game event activity and worldstate
-information to [Questie-335](https://github.com/Aldori15/Questie). Questie can use
-this information to update available quest icons when events start or stop,
-including events started manually with GM commands outside their calendar dates.
-
-**The bridge requires both this server module and the Questie client integration.**
+An optional AzerothCore module that lets [Questie-335](https://github.com/Aldori15/Questie)
+follow live server events and world progress, including holidays activated outside their calendar dates.
+Install both this server module and Questie-335 to use the bridge.
 
 ## Features
 
-- Live holiday activity, including manual GM starts and stops.
-- Stranglethorn Fishing Extravaganza turn-ins and winner-dependent availability
-  for Master Angler and Apprentice Angler.
-- Kalu'ak Fishing Derby availability: quest 24803 before Clearwater declares a
-  winner, and Better Luck Next Time (24806) afterward.
-- Darkmoon Faire activity and questgiver locations in Mulgore, Elwynn Forest,
-  and Terokkar Forest, including multiple locations active at the same time.
-- Scourge Invasion activity.
-- Isle of Quel'Danas quest unlocks, including independent construction projects.
-- World Progress in related Questie Journey details and hover tooltips: Sun's Reach
-  phase and reported unfinished-project percentages, plus Scourge activity, battles
-  won, and active-zone necropolis counts. Uses the existing `Progress` setting.
-- Authoritative daily and weekly quest pool selections, including custom pools.
-  Questie hides inactive choices before players visit the questgiver.
-- Wintergrasp faction control and battle activity, with scripted quest availability
-  for attacking and defending factions, including indirect pooled quest variants.
+- Holidays started or stopped by GM commands or server scripts, including simultaneous Darkmoon Faire locations.
+- Stranglethorn Fishing Extravaganza and Kalu'ak Fishing Derby quests before and after a winner is declared.
+- Scourge Invasion activity and Isle of Quel'Danas quest unlocks.
+- The server's selected daily and weekly pool quests, before visiting the questgiver. Custom pools are supported.
+- Wintergrasp quests and questgiver locations as faction control changes.
+- World Progress in related Journey quest details and hover tooltips: Sun's Reach phase and construction
+  percentages, plus Scourge Invasion victories and remaining necropolises.
 
-The module reports server state; it does not start events or change quest
-requirements. Questie's visibility options, character requirements, and manually
-hidden quests still apply. Scourge Invasion and Sun's Reach quests require their
-respective visibility options to be enabled in Questie.
-
-## Requirements
-
-- An AzerothCore WotLK server and access to rebuild worldserver.
-- World of Warcraft client version 3.3.5a (12340).
-- [Questie-335](https://github.com/Aldori15/Questie), with the client bridge changes
-  installed on each player who wants this feature.
-
-No SQL installation, Playerbots module, Lua scripting engine, or client executable
-patch is required.
+Questie's visibility options, character requirements, and manually hidden quests still apply.
+Accepted quests remain tracked when events, pool selections, or faction control change.
+The module reports server state without changing event schedules or quest requirements.
 
 ## Installation
 
-1. Download this repository into your AzerothCore source directory as
-   `modules/mod-questie-bridge`. Alternatively, run this command from the
-   AzerothCore source directory:
+Requires an AzerothCore WotLK server that you can rebuild, a WoW 3.3.5a (12340) client,
+and [Questie-335](https://github.com/Aldori15/Questie). No SQL installation or Lua scripting engine is required.
+
+1. Download this repository into your AzerothCore source directory as `modules/mod-questie-bridge`,
+   or run this command from the source directory:
 
    ```sh
    git clone https://github.com/Aldori15/mod-questie-bridge.git modules/mod-questie-bridge
    ```
 
-2. Rerun CMake and rebuild source.
-
-3. Copy `QuestieBridge.conf.dist` to `QuestieBridge.conf` in your server's
-   `configs/modules` directory.
-
+2. Rerun CMake, rebuild, and install your updated server binaries and configuration files.
+3. In the server's `configs/modules` directory, copy `QuestieBridge.conf.dist` to `QuestieBridge.conf`.
+   The default settings enable all bridge features.
 4. Restart worldserver.
+5. Install [Questie-335](https://github.com/Aldori15/Questie) in `Interface/AddOns/Questie-335`,
+   then log in or run `/reload`.
+6. Run `/qserver` in game. **Live state** confirms the connection.
 
-5. Install Questie with the client bridge integration from the
-   [Questie repository](https://github.com/Aldori15/Questie). Extract the addon
-   into `Interface/AddOns/Questie-335`, then log in or run `/reload`.
-
-6. Run `/qserver` in game. It shows the Questie version, client and server protocol
-   versions, module version, and compiled AzerothCore revision. A connected bridge
-   reports `Live state` and the
-   `EVENTS`, `HEARTBEAT`, `KALUAK`, `QUELDANAS`, `QUESTPOOLS`, `SCOURGE`, `VALUES`, and `WINTERGRASP` capabilities
-   with the default configuration. It also lists every active event ID, including
-   events started by GM commands or Lua scripts, followed by fishing and worldstate
-   diagnostics. Snapshot and heartbeat counts cover the current addon session.
-   Quest pool diagnostics report pool, member, and selected counts, plus the number
-   of quests unknown to the installed Questie database. Use `/qserver pool 5678`
-   to inspect the raid weekly pool, or substitute another pool ID.
-   Use `/qserver wintergrasp` to inspect faction control, battle activity, and
-   permitted/inactive scripted quest gates. Permitted does not mean the player
-   meets the quest's character requirements.
+To display Scourge Invasion or Sun's Reach quests, enable **Available Scourge Invasion Quests**
+or **Available Sun's Reach Quests** in Questie's icon options.
 
 ## Configuration
 
-All options default to `1` (enabled). Set an option to `0` to disable it.
+All options default to `1` (enabled). Set an option to `0` to disable it,
+then run `.reload config` in game.
 
-```ini
-QuestieBridge.Enabled = 1
-QuestieBridge.Events = 1
-QuestieBridge.WorldStates = 1
-QuestieBridge.Progress = 1
-QuestieBridge.Kaluak = 1
-QuestieBridge.QuestPools = 1
-QuestieBridge.Wintergrasp = 1
-```
+| Option | Controls |
+| --- | --- |
+| `QuestieBridge.Enabled` | The entire bridge |
+| `QuestieBridge.Events` | Holiday activity and event-based quest unlocks |
+| `QuestieBridge.WorldStates` | Requested worldstate values, including the Stranglethorn winner flag |
+| `QuestieBridge.Progress` | Scourge Invasion activity and Journey world progress |
+| `QuestieBridge.Kaluak` | Kalu'ak winner-dependent quest availability |
+| `QuestieBridge.QuestPools` | Daily and weekly quest pool selections |
+| `QuestieBridge.Wintergrasp` | Wintergrasp state, quest availability, and questgiver location filtering |
 
-- `Enabled`: enables the entire bridge.
-- `Events`: reports the game-event catalog, holiday stages, and actual activity.
-- `WorldStates`: provides requested persistent worldstate values, including the
-  fishing winner flag.
-- `Progress`: reports public Scourge Invasion and Quel'Danas progress values.
-- `Kaluak`: observes Elder Clearwater's in-memory winner flag without modifying
-  his AI, quest rewards, or the event schedule.
-- `QuestPools`: reports loaded pool membership and live selected/inactive state.
-  No quest ID list, SQL installation, or NPC visit is needed. Existing configuration
-  files can add this option; the default is enabled when the option is absent.
-- `Wintergrasp`: reports public battlefield state and the stock questgiver script's
-  faction and pool gates. It reads PoolMgr independently of `QuestPools`, so the
-  eight indirect attacking variants work even when general pool reporting is disabled.
+Disabling `Progress` also removes live Scourge activity reporting. Quel'Danas quest unlocks use `Events`
+and continue working independently of progress displays.
 
-Use `.reload config` after changing these options. Disabling `Progress` does not
-disable Quel'Danas quest unlock reporting, which uses `Events`.
+## Checking the connection
 
-## Behavior and troubleshooting
+- `/qserver`: connection status, versions, active events, and reported server state.
+- `/qserver pool <pool ID>`: selected and inactive quests in a pool. For example, `/qserver pool 5678`
+  shows the raid weekly pool.
+- `/qserver wintergrasp`: faction control, battle activity, and quest availability rules.
 
-Fresh bridge information takes priority over calendar or manual availability
-assumptions for supported content. Confirmed inactive events hide that content
-even during a calendar window. If the bridge is unavailable, a capability is
-disabled, or its information expires, Questie uses its existing calendar and
-manual settings. Player preferences are not overwritten.
+Changes normally appear within a few seconds. Small heartbeats keep unchanged information current
+without repeatedly sending the full state. Heartbeat counts increasing while snapshots stay steady is normal.
 
-Event and worldstate changes normally reach Questie within a few seconds. Live
-information expires after 30 seconds without a valid update. An unavailable
-bridge is checked approximately once per minute; `/reload` starts discovery
-again immediately.
+If `/qserver` is unavailable, check that Questie-335 is installed and loaded. If it reports no connection,
+check that the module was included in your build, worldserver was restarted, and `QuestieBridge.Enabled = 1`.
+For a protocol mismatch, install matching Questie and module builds. Include `/qserver` output when reporting an issue.
 
-The server sends a complete snapshot when Questie connects, subscriptions change,
-or reported state changes. While state stays unchanged, it sends a small
-heartbeat approximately every 10 seconds. Questie acknowledges its current
-snapshot approximately every 20 seconds to renew the server subscription. A
-renewal can also receive a heartbeat reply. This reduces repeated addon messages
-and client snapshot processing; server state polling continues.
+## Optional behavior
 
-Each heartbeat identifies the complete snapshot it confirms. Questie accepts it
-only for a matching, unexpired snapshot. A missed state change or failed renewal
-requests a complete replacement; a heartbeat alone cannot restore expired state.
-Use `/qserver` to verify that heartbeat counts grow while snapshot counts stay
-steady during idle periods. No additional configuration is required.
+Live server information takes priority for supported content. If the module is absent, a feature is disabled,
+or updates stop for 30 seconds, Questie returns to its existing calendar detection, manual settings,
+and daily quest discovery. Players without the addon can continue playing normally.
 
-At each full connection request, the server sends a small diagnostic handshake.
-Its format is independent of the state protocol, so incompatible builds can report
-their protocol versions without exchanging quest state. `/qserver` distinguishes
-a protocol mismatch, a disabled bridge, and no response. There is no protocol
-downgrade. Diagnostic replies cannot establish or extend quest-state freshness.
-
-The module version is a release label maintained in the module source. The AC
-revision identifies the compiled core revision, not uncommitted module changes.
-The reported handshake age is separate from the live-state age and normally grows
-while heartbeats keep an unchanged snapshot fresh.
-
-If `/qserver` is not recognized, confirm that your Questie version contains the
-client integration and that the addon finished loading. If it reports no fresh
-state, check that the module was included in your server build, worldserver was
-restarted, and `QuestieBridge.Enabled` is enabled.
-
-Servers without this module retain Questie's existing behavior. Players without
-the matching addon integration can continue playing normally.
-
-## Scope
-
-Quest pool selection is read from AzerothCore's loaded PoolMgr state on the world
-thread. Membership is discovered from both creature and gameobject quest starters
-and verified against PoolMgr. Newly added pool members need no bridge code changes
-after the core loads them. Entirely new quests still require Questie database data;
-the bridge transports IDs and selection, not quest definitions or locations.
-
-Fresh selections override NPC/comms observations for those pool members. Questie
-keeps the observations for fallback and still applies character requirements,
-completion, daily limits, holiday gates, and visibility preferences. Accepted
-quests and their objectives are retained when the pool rotates. Selection may
-include multiple quests or none; it does not assume one selected quest per pool.
-
-The Wintergrasp integration matches the 26 faction-dependent quests in AC's
-`npc_wg_quest_giver` script. Eight attacking variants inherit the selection of
-their defending counterparts. The server evaluates these rules and sends explicit
-quest gates; Questie does not infer them from the calendar or duplicate the rule table.
-Quest pool diagnostics still describe selection alone, while Wintergrasp diagnostics
-include faction control. A selected defending pool member can therefore be unavailable
-when its faction is attacking.
-
-The script checks faction control between battles as well as during battles.
-Battle activity and battlefield enablement are reported for diagnostics, but are
-not invented as additional quest requirements. A battlefield that was not initialized
-reports unknown state and preserves fallback. Accepted quests retain their objectives
-when control changes. Other Wintergrasp quests keep their existing requirements.
-The bridge does not report moving NPC coordinates, a battle countdown, or custom script rules.
-Questie's NPC correction generator reads the stock C++ fortress and outside-camp
-spawn tables. Its client spawn filters use the reported defender to display the
-appropriate locations, including accepted quest notes and manual NPC notes.
-Unknown or expired ownership state restores the static locations. This uses the
-existing Wintergrasp capability and requires no additional server configuration.
-Unrelated scripted quest-choice mechanisms still need separate integrations.
-
-Snapshots are bounded to 4096 rows, including event and progress data. If the full
-pool catalog cannot fit, the module omits `QUESTPOOLS` rather than advertising a
-partial catalog. Questie's existing discovery/comms behavior then applies.
-
-The event transport and persistent worldstate subscriptions are generic. Questie
-uses separate client integrations to interpret that data for supported quests.
-Custom quests, custom events, and additional scripted availability conditions may
-need matching integrations.
+The bridge supplies state for quests already known to Questie. Entirely new custom quests still need addon
+data for their names and locations; custom scripted quest rules may need additional integration.
+Kalu'ak winner state is available while Elder Clearwater's supported NPC script is loaded.
 
 ## Links
 
 - [Questie-335](https://github.com/Aldori15/Questie)
-- [Module repository and issue tracker](https://github.com/Aldori15/mod-questie-bridge)
+- [Report a module issue](https://github.com/Aldori15/mod-questie-bridge/issues)
 
 ## License
 

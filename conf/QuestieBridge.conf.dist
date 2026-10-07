@@ -35,3 +35,7 @@ QuestieBridge.Wintergrasp = 1
 # Report the weekly quest family and unlocks in each player's current ICC raid instance.
 # Outside ICC, Questie keeps its existing behavior; no other lockouts are queried.
 QuestieBridge.ICC = 1
+
+# Use the server's weekly/monthly quest reset deadlines in Questie's completion history.
+# Daily resets continue using the client's existing API.
+QuestieBridge.Resets = 1

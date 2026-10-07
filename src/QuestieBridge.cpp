@@ -6,6 +6,7 @@
 #include "Chat.h"
 #include "Config.h"
 #include "GameEventMgr.h"
+#include "GameTime.h"
 #include "GitRevision.h"
 #include "Log.h"
 #include "ObjectAccessor.h"
@@ -33,7 +34,7 @@
 namespace
 {
 constexpr char Envelope[] = "QSTSVR\t";
-constexpr uint32 ProtocolVersion = 7;
+constexpr uint32 ProtocolVersion = 8;
 constexpr char ModuleVersion[] = "0.1.0";
 constexpr uint32 Events = 1;
 constexpr uint32 Values = 2;
@@ -42,7 +43,8 @@ constexpr uint32 Kaluak = 8;
 constexpr uint32 QuestPools = 16;
 constexpr uint32 Wintergrasp = 32;
 constexpr uint32 ICC = 64;
-std::atomic<uint32> Capabilities{Events | Values | Progress | Kaluak | QuestPools | Wintergrasp | ICC};
+constexpr uint32 Resets = 128;
+std::atomic<uint32> Capabilities{Events | Values | Progress | Kaluak | QuestPools | Wintergrasp | ICC | Resets};
 std::atomic<bool> Dirty{false};
 using Clock = std::chrono::steady_clock;
 
@@ -220,6 +222,8 @@ public:
                 caps |= Wintergrasp;
             if (sConfigMgr->GetOption<bool>("QuestieBridge.ICC", true))
                 caps |= ICC;
+            if (sConfigMgr->GetOption<bool>("QuestieBridge.Resets", true))
+                caps |= Resets;
         }
         Capabilities.store(caps);
         Dirty.store(true);
@@ -277,6 +281,15 @@ public:
         };
         if (capabilities & Values)
             addCapability("VALUES");
+        uint64 const weeklyReset = sWorldState->getWorldState(WORLD_STATE_CUSTOM_WEEKLY_QUEST_RESET_TIME);
+        uint64 const monthlyReset = sWorldState->getWorldState(WORLD_STATE_CUSTOM_MONTHLY_QUEST_RESET_TIME);
+        bool const reportResets = (capabilities & Resets) && weeklyReset && monthlyReset
+            && weeklyReset <= std::numeric_limits<uint32>::max() && monthlyReset <= std::numeric_limits<uint32>::max();
+        if (reportResets)
+        {
+            addCapability("RESETS");
+            commonRows.push_back("P:QUEST_RESETS:" + std::to_string(weeklyReset) + ':' + std::to_string(monthlyReset));
+        }
         if (capabilities & Progress)
         {
             addCapability("SCOURGE");
@@ -299,7 +312,8 @@ public:
             auto const rows = GetQuestPoolRows();
             // Reserve per-player worldstate and ICC rows. Never send a
             // partial pool catalog: omissions would make inactive choices unknown.
-            std::size_t const reserved = 16 + ((capabilities & ICC) ? QuestieBridgeICCMaxRows : 0);
+            std::size_t const reserved = 16 + (reportResets ? 1 : 0)
+                + ((capabilities & ICC) ? QuestieBridgeICCMaxRows : 0);
             if (commonRows.size() + rows.size() + reserved <= 4096)
             {
                 addCapability("QUESTPOOLS");
@@ -325,7 +339,7 @@ public:
                         rows.push_back("W:" + std::to_string(id) + ':'
                             + std::to_string(sWorldState->getWorldState(id)));
                 std::string playerCaps = caps;
-                if ((capabilities & ICC) && rows.size() + QuestieBridgeICCMaxRows <= 4096)
+                if ((capabilities & ICC) && rows.size() + QuestieBridgeICCMaxRows + (reportResets ? 1 : 0) <= 4096)
                 {
                     playerCaps += (playerCaps.empty() ? "" : ",");
                     playerCaps += "ICC";
@@ -339,6 +353,10 @@ public:
                 {
                     if (changed)
                     {
+                        // Sample the clock only when sending a snapshot. It must not
+                        // change the signature and turn every heartbeat into a full batch.
+                        if (reportResets)
+                            rows.push_back("P:SERVER_TIME:" + std::to_string(GameTime::GetGameTime().count()));
                         SendSnapshot(player, subscriber, playerCaps, rows);
                         subscriber.Previous = std::move(signature);
                     }

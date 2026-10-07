@@ -12,6 +12,7 @@ Install both this server module and Questie-335 to use the bridge.
 - Scourge Invasion activity and Isle of Quel'Danas quest unlocks.
 - The server's selected daily and weekly pool quests, before visiting the questgiver. Custom pools are supported.
 - ICC weekly quests follow the selected family, raid size, and unlocks in each player's current raid instance.
+- Weekly and monthly quest completion history follows the server's reset schedule.
 - Wintergrasp quests and questgiver locations as faction control changes.
 - World Progress in related Journey quest details and hover tooltips: Sun's Reach phase and construction
   percentages, plus Scourge Invasion victories and remaining necropolises.
@@ -58,6 +59,7 @@ then run `.reload config` in game.
 | `QuestieBridge.QuestPools` | Daily and weekly quest pool selections |
 | `QuestieBridge.Wintergrasp` | Wintergrasp state, quest availability, and questgiver location filtering |
 | `QuestieBridge.ICC` | Weekly quest selection and unlocks in the player's current ICC raid instance |
+| `QuestieBridge.Resets` | Weekly and monthly quest reset timing; daily resets use the existing client API |
 
 Disabling `Progress` also removes live Scourge activity reporting. Quel'Danas quest unlocks use `Events`
 and continue working independently of progress displays.
@@ -69,6 +71,7 @@ and continue working independently of progress displays.
   shows the raid weekly pool.
 - `/qserver wintergrasp`: faction control, battle activity, and quest availability rules.
 - `/qserver icc`: the current ICC instance, raid difficulty, weekly quest family, and availability gates.
+- `/qserver resets`: the server's next weekly and monthly quest resets.
 
 ICC selection applies while the player is inside that raid. Outside ICC, Questie keeps its existing behavior.
 

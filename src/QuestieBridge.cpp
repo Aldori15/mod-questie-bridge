@@ -5,14 +5,19 @@
 
 #include "Chat.h"
 #include "Config.h"
+#include "Creature.h"
 #include "GameEventMgr.h"
 #include "GameTime.h"
 #include "GitRevision.h"
 #include "Log.h"
+#include "Map.h"
+#include "MotionMaster.h"
 #include "ObjectAccessor.h"
+#include "ObjectMgr.h"
 #include "Player.h"
 #include "PoolMgr.h"
 #include "ScriptMgr.h"
+#include "StringFormat.h"
 #include "WorldPacket.h"
 #include "WorldState.h"
 #include "QuestieBridgeKaluak.h"
@@ -24,8 +29,10 @@
 #include <atomic>
 #include <charconv>
 #include <chrono>
+#include <cmath>
 #include <limits>
 #include <map>
+#include <set>
 #include <mutex>
 #include <string>
 #include <string_view>
@@ -35,7 +42,7 @@
 namespace
 {
 constexpr char Envelope[] = "QSTSVR\t";
-constexpr uint32 ProtocolVersion = 10;
+constexpr uint32 ProtocolVersion = 12;
 constexpr char ModuleVersion[] = "0.1.0";
 constexpr uint32 Events = 1;
 constexpr uint32 Values = 2;
@@ -46,8 +53,9 @@ constexpr uint32 Wintergrasp = 32;
 constexpr uint32 ICC = 64;
 constexpr uint32 Resets = 128;
 constexpr uint32 Phases = 256;
+constexpr uint32 Patrols = 512;
 constexpr std::size_t PhaseMaxRows = QuestieBridge::PhaseMaxRows;
-std::atomic<uint32> Capabilities{Events | Values | Progress | Kaluak | QuestPools | Wintergrasp | ICC | Resets | Phases};
+std::atomic<uint32> Capabilities{Events | Values | Progress | Kaluak | QuestPools | Wintergrasp | ICC | Resets | Phases | Patrols};
 std::atomic<bool> Dirty{false};
 using Clock = std::chrono::steady_clock;
 
@@ -59,6 +67,9 @@ struct Subscriber
     Clock::time_point LastSend;
     uint64 Sequence = 0;
     uint64 SnapshotSequence = 0;
+    uint64 PatrolSequence = 0;
+    uint64 PatrolSnapshot = 0;
+    std::string PatrolContext;
     bool ReplyRequested = false;
     std::string Previous;
 };
@@ -229,7 +240,10 @@ public:
                 caps |= Resets;
             if (sConfigMgr->GetOption<bool>("QuestieBridge.Phases", true))
                 caps |= Phases;
+            if (sConfigMgr->GetOption<bool>("QuestieBridge.Patrols", true))
+                caps |= Patrols;
         }
+        _patrolCacheDirty.store(true);
         Capabilities.store(caps);
         Dirty.store(true);
         LOG_INFO("server.loading", "mod-questie-bridge: capability mask {}", caps);
@@ -252,6 +266,12 @@ public:
         if (Subscribers.empty())
             return;
         bool const dirty = Dirty.exchange(false);
+        if (_patrolCacheDirty.exchange(false))
+        {
+            _patrolEntries.clear();
+            _patrolCached = false;
+        }
+        _patrolMaps.clear();
         auto const now = Clock::now();
         std::string caps;
         std::vector<std::string> commonRows;
@@ -302,6 +322,8 @@ public:
             AppendQuestieBridgeProgress(commonRows);
         }
         addCapability("HEARTBEAT");
+        if (capabilities & Patrols)
+            addCapability("PATROLS");
         if (capabilities & Kaluak)
         {
             addCapability("KALUAK");
@@ -378,12 +400,112 @@ public:
                     subscriber.ReplyRequested = false;
                 }
             }
+            if ((capabilities & Patrols) && subscriber.SnapshotSequence)
+                SendPatrol(player, subscriber);
             ++it;
         }
     }
 
 private:
+    // Cache relation entries on config reload, and loaded moving spawn identities
+    // once per map/tick. Never retain Creature pointers or force grids to load.
+    void SendPatrol(Player* player, Subscriber& subscriber)
+    {
+        if (!_patrolCached)
+        {
+            for (auto const& relation : *sObjectMgr->GetCreatureQuestRelationMap())
+                _patrolEntries.insert(relation.first);
+            for (auto const& relation : *sObjectMgr->GetCreatureQuestInvolvedRelationMap())
+                _patrolEntries.insert(relation.first);
+            _patrolCached = true;
+        }
+        auto const mapKey = std::make_pair(player->GetMapId(), player->GetInstanceId());
+        auto const& store = player->GetMap()->GetCreatureBySpawnIdStore();
+        auto found = _patrolMaps.find(mapKey);
+        if (found == _patrolMaps.end())
+        {
+            std::set<ObjectGuid::LowType> spawns;
+            for (auto const& [spawnId, creature] : store)
+            {
+                if (!_patrolEntries.contains(creature->GetEntry()))
+                    continue;
+                CreatureData const* data = creature->GetCreatureData();
+                if (creature->GetTransport() || (data && data->movementType != IDLE_MOTION_TYPE)
+                    || creature->GetMotionMaster()->GetCurrentMovementGeneratorType() != IDLE_MOTION_TYPE)
+                    spawns.insert(spawnId);
+            }
+            found = _patrolMaps.emplace(mapKey, std::move(spawns)).first;
+        }
+        std::vector<std::string> rows;
+        uint32 const zone = player->GetZoneId();
+        bool overflow = false;
+        for (auto const spawnId : found->second)
+        {
+            Creature* selected = nullptr;
+            bool ambiguous = false;
+            auto const range = store.equal_range(spawnId);
+            for (auto it = range.first; it != range.second; ++it)
+            {
+                Creature* creature = it->second;
+                if (!creature->IsInWorld() || !creature->IsAlive() || creature->GetZoneId() != zone
+                    || !_patrolEntries.contains(creature->GetEntry()) || !player->CanSeeOrDetect(creature)
+                    || creature->IsHostileTo(player))
+                    continue;
+                if (selected)
+                    ambiguous = true;
+                selected = creature;
+            }
+            if (!selected || ambiguous || !std::isfinite(selected->GetPositionX()) || !std::isfinite(selected->GetPositionY()))
+                continue;
+            // Transport passengers already have world coordinates here, including
+            // their deck offset. Do not project the database's deck-local position.
+            rows.push_back(Acore::StringFormat("{}:{}:{:.3f}:{:.3f}", selected->GetEntry(), spawnId,
+                selected->GetPositionX(), selected->GetPositionY()));
+            if (rows.size() > 64)
+            {
+                rows.clear();
+                overflow = true;
+                break;
+            }
+        }
+        std::string const context = Acore::StringFormat("{}~{}~{}", mapKey.first, mapKey.second, zone);
+        std::string const status = overflow ? "OVERFLOW" : "READY";
+        std::string const state = context + '~' + status + (rows.empty() ? "~EMPTY" : "~LIVE");
+        if (rows.empty() && subscriber.PatrolContext == state && subscriber.PatrolSnapshot == subscriber.SnapshotSequence)
+            return;
+        std::vector<std::string> parts;
+        std::string part;
+        for (std::string const& row : rows)
+        {
+            if (!part.empty() && part.size() + row.size() + 1 > 150)
+            {
+                parts.push_back(part);
+                part.clear();
+            }
+            if (!part.empty())
+                part += ';';
+            part += row;
+        }
+        if (!part.empty())
+            parts.push_back(part);
+        // Separate sequencing and complete batches prevent partial positions from
+        // moving pins, and cannot renew the main quest-state snapshot's freshness.
+        std::string const header = Acore::StringFormat("~{}~{}~{}~{}", ProtocolVersion, subscriber.Token,
+            subscriber.SnapshotSequence, ++subscriber.PatrolSequence);
+        Send(player, "MBEGIN" + header + '~' + context + '~' + std::to_string(rows.size())
+            + '~' + std::to_string(parts.size()) + '~' + status);
+        for (std::size_t index = 0; index < parts.size(); ++index)
+            Send(player, "MPART" + header + '~' + std::to_string(index + 1) + '~' + parts[index]);
+        Send(player, "MEND" + header);
+        subscriber.PatrolContext = state;
+        subscriber.PatrolSnapshot = subscriber.SnapshotSequence;
+    }
+
     uint32 _elapsed = 0;
+    std::atomic<bool> _patrolCacheDirty{true};
+    bool _patrolCached = false;
+    std::set<uint32> _patrolEntries;
+    std::map<std::pair<uint32, uint32>, std::set<ObjectGuid::LowType>> _patrolMaps;
 };
 
 class QuestieBridgeEventScript final : public GameEventScript

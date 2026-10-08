@@ -44,3 +44,7 @@ QuestieBridge.Resets = 1
 # Covers Icecrown, Storm Peaks, the death knight start, and other Wrath story areas.
 # Filtering is local to the current subarea; other locations keep their usual data.
 QuestieBridge.Phases = 1
+
+# Follow moving questgivers and transport passengers in the player's current zone.
+# Uses loaded NPCs only; remote or unavailable locations keep the usual marker.
+QuestieBridge.Patrols = 1

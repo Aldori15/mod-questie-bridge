@@ -14,6 +14,8 @@ Install both this server module and Questie-335 to use the bridge.
 - ICC weekly quests follow the selected family, raid size, and unlocks in each player's current raid instance.
 - Weekly and monthly quest completion history follows the server's reset schedule.
 - Wintergrasp quests and questgiver locations as faction control changes.
+- Questgiver markers follow loaded patrols and moving transport passengers in your current zone,
+  including Orgrim's Hammer and the Skybreaker.
 - NPC and object quest locations match the player's story phase in supported areas:
   Icecrown, Storm Peaks, the death knight starting area and Acherus, Borean Tundra,
   Dragonblight, Grizzly Hills, Zul'Drak, and the Battle for Undercity regions.
@@ -64,6 +66,7 @@ then run `.reload config` in game.
 | `QuestieBridge.ICC` | Weekly quest selection and unlocks in the player's current ICC raid instance |
 | `QuestieBridge.Resets` | Weekly and monthly quest reset timing; daily resets use the existing client API |
 | `QuestieBridge.Phases` | NPC and object quest locations in supported story regions |
+| `QuestieBridge.Patrols` | Live positions of moving questgivers and transport passengers in the player's zone |
 
 Disabling `Progress` also removes live Scourge activity reporting. Quel'Danas quest unlocks use `Events`
 and continue working independently of progress displays.
@@ -77,11 +80,19 @@ and continue working independently of progress displays.
 - `/qserver icc`: the current ICC instance, raid difficulty, weekly quest family, and availability gates.
 - `/qserver resets`: the server's next weekly and monthly quest resets.
 - `/qserver phases`: current phase context and story-phase location visibility.
+- `/qserver patrol` or `/qserver patrol <NPC ID>`: live questgiver positions in your current zone.
 
 ICC selection applies while the player is inside that raid. Outside ICC, Questie keeps its existing behavior.
 
 Story-phase location filtering applies only in the player's current subarea. Other locations keep their
 usual behavior, and quest prerequisites still apply. Location data must include the spawn's zone, area, and phase.
+
+Available quests, turn-ins, and manual NPC notes can follow moving questgivers, including transport passengers.
+Tracking applies to loaded NPCs visible to the player in the current zone. It never loads remote areas.
+Pins move once per server sample, without smoothing. Positions expire after five seconds without an update.
+Other zones and unavailable positions keep their usual marker and patrol line; quest requirements still apply.
+For exact spawn matching, regenerate Questie's NPC corrections from the server's creature export.
+Older location data keeps the usual locations whenever a spawn cannot be matched safely.
 
 Changes normally appear within a few seconds. Small heartbeats keep unchanged information current
 without repeatedly sending the full state. Heartbeat counts increasing while snapshots stay steady is normal.

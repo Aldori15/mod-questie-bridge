@@ -1,7 +1,8 @@
 # mod-questie-bridge
 
 An optional AzerothCore module that lets [Questie-335](https://github.com/Aldori15/Questie)
-follow live server events and world progress, including holidays activated outside their calendar dates.
+follow live quest availability, reset timing, locations, and world progress,
+including holidays activated outside their calendar dates.
 Install both this server module and Questie-335 to use the bridge.
 
 ## Features
@@ -89,9 +90,13 @@ usual behavior, and quest prerequisites still apply. Location data must include 
 
 Available quests, turn-ins, and manual NPC notes can follow moving questgivers, including transport passengers.
 Tracking applies to loaded NPCs visible to the player in the current zone. It never loads remote areas.
-Pins move once per server sample, without smoothing. Positions expire after five seconds without an update.
+Pins move once per second, without smoothing. Positions expire after five seconds without an update.
+Each sample is limited to 64 visible moving questgivers. Exceeding that limit restores static locations
+for the sample rather than publishing a partial set. Players on the same map share the loaded-spawn scan.
 Other zones and unavailable positions keep their usual marker and patrol line; quest requirements still apply.
-For exact spawn matching, regenerate Questie's NPC corrections from the server's creature export.
+Exact spawn matching uses database spawn IDs in Questie's generated NPC corrections. When maintaining
+custom correction data, regenerate NPC corrections from your server's creature export;
+only quest starters and finishers need these IDs, including event questgivers and gunship passengers.
 Older location data keeps the usual locations whenever a spawn cannot be matched safely.
 
 Changes normally appear within a few seconds. Small heartbeats keep unchanged information current
@@ -106,6 +111,8 @@ For a protocol mismatch, install matching Questie and module builds. Include `/q
 Live server information takes priority for supported content. If the module is absent, a feature is disabled,
 or updates stop for 30 seconds, Questie returns to its existing calendar detection, manual settings,
 and daily quest discovery. Players without the addon can continue playing normally.
+Weekly and monthly completions are cleared after the server advances the corresponding reset deadline;
+daily resets continue using the client API. Neither the module nor the addon changes the server's schedule.
 
 The bridge supplies state for quests already known to Questie. Entirely new custom quests still need addon
 data for their names and locations; custom scripted quest rules may need additional integration.

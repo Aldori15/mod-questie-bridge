@@ -1,6 +1,6 @@
 ###################################################################################################
 # Questie server bridge
-# Reports actual game-event activity and public world progress to Questie-335.
+# Reports live quest availability, resets, locations, and public world progress to Questie-335.
 # Reloadable with .reload config. No database installation is required.
 ###################################################################################################
 
@@ -47,4 +47,5 @@ QuestieBridge.Phases = 1
 
 # Follow moving questgivers and transport passengers in the player's current zone.
 # Uses loaded NPCs only; remote or unavailable locations keep the usual marker.
+# Samples once per second, limited to 64 visible questgivers. Positions expire after 5 seconds.
 QuestieBridge.Patrols = 1

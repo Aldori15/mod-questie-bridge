@@ -14,6 +14,9 @@ Install both this server module and Questie-335 to use the bridge.
 - ICC weekly quests follow the selected family, raid size, and unlocks in each player's current raid instance.
 - Weekly and monthly quest completion history follows the server's reset schedule.
 - Wintergrasp quests and questgiver locations as faction control changes.
+- NPC and object quest locations match the player's story phase in supported areas:
+  Icecrown, Storm Peaks, the death knight starting area and Acherus, Borean Tundra,
+  Dragonblight, Grizzly Hills, Zul'Drak, and the Battle for Undercity regions.
 - World Progress in related Journey quest details and hover tooltips: Sun's Reach phase and construction
   percentages, plus Scourge Invasion victories and remaining necropolises.
 
@@ -60,6 +63,7 @@ then run `.reload config` in game.
 | `QuestieBridge.Wintergrasp` | Wintergrasp state, quest availability, and questgiver location filtering |
 | `QuestieBridge.ICC` | Weekly quest selection and unlocks in the player's current ICC raid instance |
 | `QuestieBridge.Resets` | Weekly and monthly quest reset timing; daily resets use the existing client API |
+| `QuestieBridge.Phases` | NPC and object quest locations in supported story regions |
 
 Disabling `Progress` also removes live Scourge activity reporting. Quel'Danas quest unlocks use `Events`
 and continue working independently of progress displays.
@@ -72,8 +76,12 @@ and continue working independently of progress displays.
 - `/qserver wintergrasp`: faction control, battle activity, and quest availability rules.
 - `/qserver icc`: the current ICC instance, raid difficulty, weekly quest family, and availability gates.
 - `/qserver resets`: the server's next weekly and monthly quest resets.
+- `/qserver phases`: current phase context and story-phase location visibility.
 
 ICC selection applies while the player is inside that raid. Outside ICC, Questie keeps its existing behavior.
+
+Story-phase location filtering applies only in the player's current subarea. Other locations keep their
+usual behavior, and quest prerequisites still apply. Location data must include the spawn's zone, area, and phase.
 
 Changes normally appear within a few seconds. Small heartbeats keep unchanged information current
 without repeatedly sending the full state. Heartbeat counts increasing while snapshots stay steady is normal.

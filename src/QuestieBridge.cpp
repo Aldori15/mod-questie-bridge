@@ -17,6 +17,7 @@
 #include "WorldState.h"
 #include "QuestieBridgeKaluak.h"
 #include "QuestieBridgeICC.h"
+#include "QuestieBridgePhases.h"
 #include "QuestieBridgeProgress.h"
 #include "QuestieBridgeWintergrasp.h"
 
@@ -34,7 +35,7 @@
 namespace
 {
 constexpr char Envelope[] = "QSTSVR\t";
-constexpr uint32 ProtocolVersion = 8;
+constexpr uint32 ProtocolVersion = 10;
 constexpr char ModuleVersion[] = "0.1.0";
 constexpr uint32 Events = 1;
 constexpr uint32 Values = 2;
@@ -44,7 +45,9 @@ constexpr uint32 QuestPools = 16;
 constexpr uint32 Wintergrasp = 32;
 constexpr uint32 ICC = 64;
 constexpr uint32 Resets = 128;
-std::atomic<uint32> Capabilities{Events | Values | Progress | Kaluak | QuestPools | Wintergrasp | ICC | Resets};
+constexpr uint32 Phases = 256;
+constexpr std::size_t PhaseMaxRows = QuestieBridge::PhaseMaxRows;
+std::atomic<uint32> Capabilities{Events | Values | Progress | Kaluak | QuestPools | Wintergrasp | ICC | Resets | Phases};
 std::atomic<bool> Dirty{false};
 using Clock = std::chrono::steady_clock;
 
@@ -224,6 +227,8 @@ public:
                 caps |= ICC;
             if (sConfigMgr->GetOption<bool>("QuestieBridge.Resets", true))
                 caps |= Resets;
+            if (sConfigMgr->GetOption<bool>("QuestieBridge.Phases", true))
+                caps |= Phases;
         }
         Capabilities.store(caps);
         Dirty.store(true);
@@ -313,7 +318,8 @@ public:
             // Reserve per-player worldstate and ICC rows. Never send a
             // partial pool catalog: omissions would make inactive choices unknown.
             std::size_t const reserved = 16 + (reportResets ? 1 : 0)
-                + ((capabilities & ICC) ? QuestieBridgeICCMaxRows : 0);
+                + ((capabilities & ICC) ? QuestieBridgeICCMaxRows : 0)
+                + ((capabilities & Phases) ? PhaseMaxRows : 0);
             if (commonRows.size() + rows.size() + reserved <= 4096)
             {
                 addCapability("QUESTPOOLS");
@@ -339,6 +345,12 @@ public:
                         rows.push_back("W:" + std::to_string(id) + ':'
                             + std::to_string(sWorldState->getWorldState(id)));
                 std::string playerCaps = caps;
+                if ((capabilities & Phases) && rows.size() + PhaseMaxRows + (reportResets ? 1 : 0) <= 4096)
+                {
+                    playerCaps += (playerCaps.empty() ? "" : ",");
+                    playerCaps += "PHASES";
+                    QuestieBridge::AppendPhases(player, rows);
+                }
                 if ((capabilities & ICC) && rows.size() + QuestieBridgeICCMaxRows + (reportResets ? 1 : 0) <= 4096)
                 {
                     playerCaps += (playerCaps.empty() ? "" : ",");

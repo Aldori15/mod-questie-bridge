@@ -39,3 +39,8 @@ QuestieBridge.ICC = 1
 # Use the server's weekly/monthly quest reset deadlines in Questie's completion history.
 # Daily resets continue using the client's existing API.
 QuestieBridge.Resets = 1
+
+# Match NPC/object quest locations to the player's phase in supported story regions.
+# Covers Icecrown, Storm Peaks, the death knight start, and other Wrath story areas.
+# Filtering is local to the current subarea; other locations keep their usual data.
+QuestieBridge.Phases = 1

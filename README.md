@@ -1,163 +1,88 @@
 # mod-questie-bridge
 
 An optional AzerothCore module that lets [Questie-335](https://github.com/Aldori15/Questie)
-follow live quest availability, reset timing, locations, and world progress,
-including holidays activated outside their calendar dates.
-Install both this server module and Questie-335 to use the bridge.
+follow live quest availability, rewards, reset timing, and locations.
+Install both the module and addon to use these features.
 
 ## Features
 
-- Holidays started or stopped by GM commands or server scripts, including simultaneous Darkmoon Faire locations.
-- Zalazane's Fall quests appear while the server event is active.
-- Stranglethorn Fishing Extravaganza and Kalu'ak Fishing Derby quests before and after a winner is declared.
-- Scourge Invasion activity and Isle of Quel'Danas quest unlocks.
-- The server's selected daily and weekly pool quests, before visiting the questgiver. Custom pools are supported.
-- ICC weekly quests follow the selected family, raid size, and unlocks in each player's current raid instance.
-- Weekly and monthly quest completion history follows the server's reset schedule.
-- Quest XP displays follow the character's effective normal/dungeon-finder rates and active quest-XP auras, including heirlooms.
-- Quest reputation previews follow global/faction rates, reputation auras, grey-quest reduction, and eligible RAF bonuses.
-- Wintergrasp quests and questgiver locations as faction control changes.
-- Questgiver markers follow loaded patrols and moving transport passengers in your current zone,
-  including Orgrim's Hammer and the Skybreaker.
-- NPC and object quest locations match the player's story phase in supported areas:
-  Icecrown, Storm Peaks, the death knight starting area and Acherus, Borean Tundra,
-  Dragonblight, Grizzly Hills, Zul'Drak, and the Battle for Undercity regions.
-- World Progress in related Journey quest details and hover tooltips: Sun's Reach phase and construction
-  percentages, plus Scourge Invasion victories and remaining necropolises.
-
-Questie's visibility options, character requirements, and manually hidden quests still apply.
-Accepted quests remain tracked when events, pool selections, or faction control change.
-The module reports server state without changing event schedules or quest requirements.
+- Live holidays, fishing tournaments, Scourge Invasion, and Isle of Quel'Danas unlocks.
+- Selected daily/weekly quest pools, ICC weekly quests, and Wintergrasp control.
+- Weekly/monthly quest resets and live XP, reputation, and money rates.
+- Moving questgiver markers in your current zone, including Orgrim's Hammer and the Skybreaker.
+- Phase-dependent locations in supported story areas, including Icecrown, Storm Peaks, and the death knight start.
+- World Progress in related Journey quest details and tooltips.
 
 ## Installation
 
-Requires an AzerothCore WotLK server that you can rebuild, a WoW 3.3.5a (12340) client,
-and [Questie-335](https://github.com/Aldori15/Questie). No SQL installation or Lua scripting engine is required.
+Requires an AzerothCore WotLK server you can rebuild and a WoW 3.3.5a (12340) client.
 
-1. Download this repository into your AzerothCore source directory as `modules/mod-questie-bridge`,
-   or run this command from the source directory:
+1. Download this repository into `modules/mod-questie-bridge`, or run from your source directory:
 
    ```sh
    git clone https://github.com/Aldori15/mod-questie-bridge.git modules/mod-questie-bridge
    ```
 
-2. Rerun CMake, rebuild, and install your updated server binaries and configuration files.
-3. In the server's `configs/modules` directory, copy `QuestieBridge.conf.dist` to `QuestieBridge.conf`.
-   The default settings enable all bridge features.
+2. Rerun CMake, rebuild, and install the server.
+3. Copy `QuestieBridge.conf.dist` to `QuestieBridge.conf` in the server's `configs/modules` directory.
 4. Restart worldserver.
-5. Install [Questie-335](https://github.com/Aldori15/Questie) in `Interface/AddOns/Questie-335`,
-   then log in or run `/reload`.
-6. Run `/qserver` in game. **Live state** confirms the connection.
+5. Install the matching [Questie-335 addon](https://github.com/Aldori15/Questie), then log in or `/reload`.
+6. Run `/qserver`. **Live state** confirms the connection.
 
-To display Scourge Invasion or Sun's Reach quests, enable **Available Scourge Invasion Quests**
-or **Available Sun's Reach Quests** in Questie's icon options.
+No SQL installation is required. Enable **Available Scourge Invasion Quests** or
+**Available Sun's Reach Quests** in Questie's icon options to show those quest sets.
 
 ## Configuration
 
-All options default to `1` (enabled). Set an option to `0` to disable it,
-then run `.reload config` in game.
+All options default to `1` (enabled). Set an option to `0` to disable it, then run `.reload config`.
 
 | Option | Controls |
 | --- | --- |
-| `QuestieBridge.Enabled` | The entire bridge |
-| `QuestieBridge.Events` | Holiday activity and event-based quest unlocks |
-| `QuestieBridge.WorldStates` | Requested worldstate values, including the Stranglethorn winner flag |
-| `QuestieBridge.Progress` | Scourge Invasion activity and Journey world progress |
-| `QuestieBridge.Kaluak` | Kalu'ak winner-dependent quest availability |
-| `QuestieBridge.QuestPools` | Daily and weekly quest pool selections |
-| `QuestieBridge.Wintergrasp` | Wintergrasp state, quest availability, and questgiver location filtering |
-| `QuestieBridge.ICC` | Weekly quest selection and unlocks in the player's current ICC raid instance |
-| `QuestieBridge.Resets` | Weekly and monthly quest reset timing; daily resets use the existing client API |
-| `QuestieBridge.Phases` | NPC and object quest locations in supported story regions |
-| `QuestieBridge.Patrols` | Live positions of moving questgivers and transport passengers in the player's zone |
-| `QuestieBridge.QuestXP` | Effective normal/DF quest XP rates and the character's active quest-XP aura multiplier |
-| `QuestieBridge.QuestReputation` | Global/faction quest reputation rates, active reputation auras, grey-quest reduction and RAF eligibility |
-
-Disabling `Progress` also removes live Scourge activity reporting. Quel'Danas quest unlocks use `Events`
-and continue working independently of progress displays.
+| `QuestieBridge.Enabled` | Entire bridge |
+| `QuestieBridge.Events` | Holidays and event quest unlocks |
+| `QuestieBridge.WorldStates` | Requested worldstate values, including the fishing winner |
+| `QuestieBridge.Progress` | Scourge activity and World Progress displays |
+| `QuestieBridge.Kaluak` | Kalu'ak winner-dependent quests |
+| `QuestieBridge.QuestPools` | Daily/weekly quest pool selections |
+| `QuestieBridge.Wintergrasp` | Wintergrasp quests and questgiver locations |
+| `QuestieBridge.ICC` | Weekly quests in the player's current ICC instance |
+| `QuestieBridge.Resets` | Weekly/monthly reset timing |
+| `QuestieBridge.Phases` | Locations matching the player's story phase |
+| `QuestieBridge.Patrols` | Moving questgiver locations in the current zone |
+| `QuestieBridge.QuestXP` | Quest XP rates and active quest-XP bonuses |
+| `QuestieBridge.QuestReputation` | Quest reputation rates and active reputation bonuses |
+| `QuestieBridge.QuestMoney` | Ordinary and maximum-level bonus money rates |
 
 ## Checking the connection
 
-- `/qserver`: connection status, versions, active events, and reported server state.
-- `/qserver pool <pool ID>`: selected and inactive quests in a pool. For example, `/qserver pool 5678`
-  shows the raid weekly pool.
-- `/qserver wintergrasp`: faction control, battle activity, and quest availability rules.
-- `/qserver icc`: the current ICC instance, raid difficulty, weekly quest family, and availability gates.
-- `/qserver resets`: the server's next weekly and monthly quest resets.
-- `/qserver phases`: current phase context and story-phase location visibility.
-- `/qserver patrol` or `/qserver patrol <NPC ID>`: live questgiver positions in your current zone.
-- `/qserver xp`: effective normal/DF quest XP rates, active quest-XP aura multiplier, and server level cap.
-- `/qserver rep` or `/qserver rep <faction ID>`: live reputation modifiers and faction rates for each quest type.
+| Command | Shows |
+| --- | --- |
+| `/qserver` | Connection, versions, and live state |
+| `/qserver pool <pool ID>` | Selected quests in a pool; for example, `5678` for raid weeklies |
+| `/qserver wintergrasp` | Wintergrasp control and battle state |
+| `/qserver icc` | Weekly quests in your current ICC instance |
+| `/qserver resets` | Next weekly/monthly resets |
+| `/qserver phases` | Story-phase location filtering |
+| `/qserver patrol [NPC ID]` | Live moving questgiver positions |
+| `/qserver xp` | Quest XP rates and active bonuses |
+| `/qserver rep [faction ID]` | Reputation modifiers and faction quest rates |
+| `/qserver money` | Ordinary and maximum-level bonus money rates |
 
-Quest XP reads `Player::GetQuestRate(false/true)`, including `OnPlayerGetQuestRate` overrides,
-and the character's active `SPELL_AURA_MOD_XP_QUEST_PCT` multiplier. Values are sampled in the
-existing per-player state check and sent only when the snapshot changes. Changing rates with
-`.reload config`, or through a module using the getter hook, needs no addon reload or regeneration.
-The module reads state without changing rewards or running reward/mutation hooks.
-`QUESTXP` does not describe later quest-specific hooks, recruit-a-friend XP, XP locks, or money/reputation rates.
-Missing/disabled/stale XP data restores Questie's generated XP and equipped-item calculation.
-Finite multipliers from 0 through 1000 are supported; invalid values omit this optional capability.
-The XP values preserve the core's float precision and separate rate/aura truncation steps.
+## Behavior
 
-Quest reputation reads `Rate.Reputation.Gain`, `Rate.Reputation.LowLevel.Quest`, the character's
-`SPELL_AURA_MOD_REPUTATION_GAIN` modifier, and the currently eligible recruit-a-friend reputation multiplier.
-The server also sends its complete loaded faction rate catalog for normal, daily, weekly, monthly,
-and repeatable quests. `.reload config` and `.reload reputation_reward_rate` changes are picked up
-without addon reload or regeneration. The catalog is shared across subscribers during each state check;
-no SQL is polled. Missing catalog entries mean the core's default 1x, overriding generated rates.
-Live aura data replaces the racial estimate; gains and losses use the core's different aura signs.
-Faction-specific kill auras and championing tabards do not change quest rewards.
+Changes normally appear within a few seconds. Rehover or reopen reward displays to refresh them.
+Rate changes through `.reload config` and `.reload reputation_reward_rate` need no addon reload
+or corrections regeneration. XP bonuses do not increase the maximum-level money bonus.
+Reward previews can differ from final awards because of server rounding, caps, or custom rules.
 
-`QUESTREP` describes rates applied to generated base rewards, not an exact reward oracle. The preview
-uses core float operation order and integer truncation. AC alternates faction rounding between truncation
-and ceil, so a final reward can differ by one point. Reputation caps, hostile-faction suppression,
-custom spillover tables, fractional base rewards omitted by generated data, and later script hooks can
-also change the final amount. Existing Aldor/Scryer penalty and Sha'tar display rules remain in place;
-the global rate applies once to estimated spillover penalties.
-Missing/disabled/stale reputation data restores generated faction rates and racial bonuses.
-The complete catalog is limited to 256 factions; rates must be finite multipliers from 0 through 1000,
-and the total aura modifier must be within -10000 through 10000 percent. Unsupported data or insufficient
-snapshot capacity omits this optional capability rather than sending a partial catalog.
+Patrol markers follow loaded, visible NPCs in your current zone; remote maps keep static locations
+and patrol lines. Phase filtering applies within your current subarea. Quest prerequisites,
+visibility settings, and manually hidden quests still apply.
 
-ICC selection applies while the player is inside that raid. Outside ICC, Questie keeps its existing behavior.
-
-Story-phase location filtering applies only in the player's current subarea. Other locations keep their
-usual behavior, and quest prerequisites still apply. Location data must include the spawn's zone, area, and phase.
-
-Available quests, turn-ins, and manual NPC notes can follow moving questgivers, including transport passengers.
-Tracking applies to loaded NPCs visible to the player in the current zone. It never loads remote areas.
-Pins move once per second, without smoothing. Positions expire after five seconds without an update.
-Each sample is limited to 64 visible moving questgivers. Exceeding that limit restores static locations
-for the sample rather than publishing a partial set. Players on the same map share the loaded-spawn scan.
-Other zones and unavailable positions keep their usual marker and patrol line; quest requirements still apply.
-Exact spawn matching uses database spawn IDs in Questie's generated NPC corrections. When maintaining
-custom correction data, regenerate NPC corrections from your server's creature export;
-only quest starters and finishers need these IDs, including event questgivers and gunship passengers.
-Older location data keeps the usual locations whenever a spawn cannot be matched safely.
-
-Changes normally appear within a few seconds. Small heartbeats keep unchanged information current
-without repeatedly sending the full state. Heartbeat counts increasing while snapshots stay steady is normal.
-
-If `/qserver` is unavailable, check that Questie-335 is installed and loaded. If it reports no connection,
-check that the module was included in your build, worldserver was restarted, and `QuestieBridge.Enabled = 1`.
-For a protocol mismatch, install matching Questie and module builds. Include `/qserver` output when reporting an issue.
-
-## Optional behavior
-
-Live server information takes priority for supported content. If the module is absent, a feature is disabled,
-or updates stop for 30 seconds, Questie returns to its existing calendar detection, manual settings,
-and daily quest discovery. Players without the addon can continue playing normally.
-Weekly and monthly completions are cleared after the server advances the corresponding reset deadline;
-daily resets continue using the client API. Neither the module nor the addon changes the server's schedule.
-
-The bridge supplies state for quests already known to Questie. Entirely new custom quests still need addon
-data for their names and locations; custom scripted quest rules may need additional integration.
-Kalu'ak winner state is available while Elder Clearwater's supported NPC script is loaded.
-
-## Links
-
-- [Questie-335](https://github.com/Aldori15/Questie)
-- [Report a module issue](https://github.com/Aldori15/mod-questie-bridge/issues)
+Unavailable server information restores Questie's usual behavior. The bridge does not change
+quest rewards, requirements, or reset schedules, and players without the addon can play normally.
+Entirely new custom quests still need addon data. For a protocol mismatch, install matching builds.
+Include `/qserver` output when [reporting an issue](https://github.com/Aldori15/mod-questie-bridge/issues).
 
 ## License
 

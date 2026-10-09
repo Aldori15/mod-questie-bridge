@@ -14,6 +14,7 @@ Install both this server module and Questie-335 to use the bridge.
 - The server's selected daily and weekly pool quests, before visiting the questgiver. Custom pools are supported.
 - ICC weekly quests follow the selected family, raid size, and unlocks in each player's current raid instance.
 - Weekly and monthly quest completion history follows the server's reset schedule.
+- Quest XP displays follow the character's effective normal/dungeon-finder rates and active quest-XP auras, including heirlooms.
 - Wintergrasp quests and questgiver locations as faction control changes.
 - Questgiver markers follow loaded patrols and moving transport passengers in your current zone,
   including Orgrim's Hammer and the Skybreaker.
@@ -68,6 +69,7 @@ then run `.reload config` in game.
 | `QuestieBridge.Resets` | Weekly and monthly quest reset timing; daily resets use the existing client API |
 | `QuestieBridge.Phases` | NPC and object quest locations in supported story regions |
 | `QuestieBridge.Patrols` | Live positions of moving questgivers and transport passengers in the player's zone |
+| `QuestieBridge.QuestXP` | Effective normal/DF quest XP rates and the character's active quest-XP aura multiplier |
 
 Disabling `Progress` also removes live Scourge activity reporting. Quel'Danas quest unlocks use `Events`
 and continue working independently of progress displays.
@@ -82,6 +84,17 @@ and continue working independently of progress displays.
 - `/qserver resets`: the server's next weekly and monthly quest resets.
 - `/qserver phases`: current phase context and story-phase location visibility.
 - `/qserver patrol` or `/qserver patrol <NPC ID>`: live questgiver positions in your current zone.
+- `/qserver xp`: effective normal/DF quest XP rates, active quest-XP aura multiplier, and server level cap.
+
+Quest XP reads `Player::GetQuestRate(false/true)`, including `OnPlayerGetQuestRate` overrides,
+and the character's active `SPELL_AURA_MOD_XP_QUEST_PCT` multiplier. Values are sampled in the
+existing per-player state check and sent only when the snapshot changes. Changing rates with
+`.reload config`, or through a module using the getter hook, needs no addon reload or regeneration.
+The module reads state without changing rewards or running reward/mutation hooks.
+`QUESTXP` does not describe later quest-specific hooks, recruit-a-friend XP, XP locks, or money/reputation rates.
+Missing/disabled/stale XP data restores Questie's generated XP and equipped-item calculation.
+Finite multipliers from 0 through 1000 are supported; invalid values omit this optional capability.
+The XP values preserve the core's float precision and separate rate/aura truncation steps.
 
 ICC selection applies while the player is inside that raid. Outside ICC, Questie keeps its existing behavior.
 

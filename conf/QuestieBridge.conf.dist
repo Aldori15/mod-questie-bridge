@@ -49,3 +49,8 @@ QuestieBridge.Phases = 1
 # Uses loaded NPCs only; remote or unavailable locations keep the usual marker.
 # Samples once per second, limited to 64 visible questgivers. Positions expire after 5 seconds.
 QuestieBridge.Patrols = 1
+
+# Report effective normal/DF quest XP rates and the player's active quest-XP aura multiplier.
+# Includes GetQuestRate module overrides and heirlooms. Does not execute reward hooks.
+# Unknown/invalid rates keep Questie's generated XP calculation. Does not change quest money.
+QuestieBridge.QuestXP = 1

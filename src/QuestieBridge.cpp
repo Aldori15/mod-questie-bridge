@@ -27,6 +27,7 @@
 #include "QuestieBridgeWintergrasp.h"
 #include "QuestieBridgeXP.h"
 #include "QuestieBridgeReputation.h"
+#include "QuestieBridgeMoney.h"
 
 #include <atomic>
 #include <charconv>
@@ -44,7 +45,7 @@
 namespace
 {
 constexpr char Envelope[] = "QSTSVR\t";
-constexpr uint32 ProtocolVersion = 14;
+constexpr uint32 ProtocolVersion = 15;
 constexpr char ModuleVersion[] = "0.1.0";
 constexpr uint32 Events = 1;
 constexpr uint32 Values = 2;
@@ -58,9 +59,10 @@ constexpr uint32 Phases = 256;
 constexpr uint32 Patrols = 512;
 constexpr uint32 QuestXP = 1024;
 constexpr uint32 QuestReputation = 2048;
+constexpr uint32 QuestMoney = 4096;
 constexpr std::size_t PhaseMaxRows = QuestieBridge::PhaseMaxRows;
 std::atomic<uint32> Capabilities{Events | Values | Progress | Kaluak | QuestPools | Wintergrasp | ICC
-    | Resets | Phases | Patrols | QuestXP | QuestReputation};
+    | Resets | Phases | Patrols | QuestXP | QuestReputation | QuestMoney};
 std::atomic<bool> Dirty{false};
 using Clock = std::chrono::steady_clock;
 
@@ -251,6 +253,8 @@ public:
                 caps |= QuestXP;
             if (sConfigMgr->GetOption<bool>("QuestieBridge.QuestReputation", true))
                 caps |= QuestReputation;
+            if (sConfigMgr->GetOption<bool>("QuestieBridge.QuestMoney", true))
+                caps |= QuestMoney;
         }
         _patrolCacheDirty.store(true);
         Capabilities.store(caps);
@@ -351,7 +355,8 @@ public:
             std::size_t const reserved = 16 + (reportResets ? 1 : 0)
                 + ((capabilities & ICC) ? QuestieBridgeICCMaxRows : 0)
                 + ((capabilities & Phases) ? PhaseMaxRows : 0) + ((capabilities & QuestXP) ? 1 : 0)
-                + ((capabilities & QuestReputation) ? QuestieBridge::ReputationMaxRows : 0);
+                + ((capabilities & QuestReputation) ? QuestieBridge::ReputationMaxRows : 0)
+                + ((capabilities & QuestMoney) ? 1 : 0);
             if (commonRows.size() + rows.size() + reserved <= 4096)
             {
                 addCapability("QUESTPOOLS");
@@ -397,6 +402,9 @@ public:
                 if (reputationRows && rows.size() + reputationRows->size() + 1 + (reportResets ? 1 : 0) <= 4096
                     && QuestieBridge::AppendQuestReputation(player, *reputationRows, rows))
                     playerCaps += (playerCaps.empty() ? "" : ",") + std::string("QUESTREP");
+                if ((capabilities & QuestMoney) && rows.size() + 1 + (reportResets ? 1 : 0) <= 4096
+                    && QuestieBridge::AppendQuestMoney(rows))
+                    playerCaps += (playerCaps.empty() ? "" : ",") + std::string("QUESTMONEY");
                 std::string signature = playerCaps;
                 for (std::string const& row : rows)
                     signature += ';' + row;

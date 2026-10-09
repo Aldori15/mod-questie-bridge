@@ -59,3 +59,7 @@ QuestieBridge.QuestXP = 1
 # Reads loaded server state without executing reputation reward/change hooks.
 # Unknown/invalid rates keep Questie's generated faction rates and racial bonus estimate.
 QuestieBridge.QuestReputation = 1
+
+# Report ordinary quest money and the separate maximum-level bonus money rates.
+# Missing/invalid rates keep Questie's generated money calculation.
+QuestieBridge.QuestMoney = 1

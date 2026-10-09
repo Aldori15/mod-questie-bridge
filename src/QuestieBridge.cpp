@@ -28,6 +28,7 @@
 #include "QuestieBridgeXP.h"
 #include "QuestieBridgeReputation.h"
 #include "QuestieBridgeMoney.h"
+#include "QuestieBridgeStateCache.h"
 
 #include <atomic>
 #include <charconv>
@@ -72,6 +73,8 @@ struct Subscriber
     std::vector<uint32> WorldStates;
     Clock::time_point LastRequest;
     Clock::time_point LastSend;
+    Clock::time_point LastStateCheck;
+    uint64 CommonRevision = 0;
     uint64 Sequence = 0;
     uint64 SnapshotSequence = 0;
     uint64 PatrolSequence = 0;
@@ -218,6 +221,90 @@ void SendHeartbeat(Player* player, Subscriber& subscriber)
         + '~' + std::to_string(subscriber.SnapshotSequence));
 }
 
+QuestieBridge::CommonState BuildCommonState(uint32 capabilities)
+{
+    std::string caps;
+    std::vector<std::string> commonRows;
+    if (capabilities & Events)
+    {
+        caps = "EVENTS";
+        auto const& events = sGameEventMgr->GetEventMap();
+        for (std::size_t id = 1; id < events.size() && id <= std::numeric_limits<uint16>::max(); ++id)
+        {
+            auto const& event = events[id];
+            if (!event.isValid())
+                continue;
+            bool const mainStage = event.HolidayId != HOLIDAY_NONE
+                && event.HolidayStage == sGameEventMgr->GetHolidayMainStage(event.HolidayId);
+            commonRows.push_back("E:" + std::to_string(id) + ':' + std::to_string(event.HolidayId)
+                + (mainStage ? ":1:" : ":0:") + (sGameEventMgr->IsActiveEvent(uint16(id)) ? "1" : "0"));
+            // Never advertise a partial catalog as authoritative. Leave room for
+            // progress/subscriptions within the client's bounded snapshot limits.
+            if (commonRows.size() > 4000)
+            {
+                caps.clear();
+                commonRows.clear();
+                break;
+            }
+        }
+    }
+    auto addCapability = [&caps](std::string const& value)
+    {
+        if (!caps.empty())
+            caps += ',';
+        caps += value;
+    };
+    if (capabilities & Values)
+        addCapability("VALUES");
+    uint64 const weeklyReset = sWorldState->getWorldState(WORLD_STATE_CUSTOM_WEEKLY_QUEST_RESET_TIME);
+    uint64 const monthlyReset = sWorldState->getWorldState(WORLD_STATE_CUSTOM_MONTHLY_QUEST_RESET_TIME);
+    bool const reportResets = (capabilities & Resets) && weeklyReset && monthlyReset
+        && weeklyReset <= std::numeric_limits<uint32>::max() && monthlyReset <= std::numeric_limits<uint32>::max();
+    if (reportResets)
+    {
+        addCapability("RESETS");
+        commonRows.push_back("P:QUEST_RESETS:" + std::to_string(weeklyReset) + ':' + std::to_string(monthlyReset));
+    }
+    if (capabilities & Progress)
+    {
+        addCapability("SCOURGE");
+        addCapability("QUELDANAS");
+        AppendQuestieBridgeProgress(commonRows);
+    }
+    addCapability("HEARTBEAT");
+    if (capabilities & Patrols)
+        addCapability("PATROLS");
+    if (capabilities & Kaluak)
+    {
+        addCapability("KALUAK");
+        commonRows.push_back("P:KA_FINISHED:" + GetQuestieBridgeKaluakFinished());
+    }
+    if (capabilities & Wintergrasp)
+    {
+        addCapability("WINTERGRASP");
+        AppendQuestieBridgeWintergrasp(commonRows);
+    }
+    if (capabilities & QuestPools)
+    {
+        auto const rows = GetQuestPoolRows();
+        // Reserve per-player worldstate and ICC rows. Never send a
+        // partial pool catalog: omissions would make inactive choices unknown.
+        std::size_t const reserved = 16 + (reportResets ? 1 : 0)
+            + ((capabilities & ICC) ? QuestieBridgeICCMaxRows : 0)
+            + ((capabilities & Phases) ? PhaseMaxRows : 0) + ((capabilities & QuestXP) ? 1 : 0)
+            + ((capabilities & QuestReputation) ? QuestieBridge::ReputationMaxRows : 0)
+            + ((capabilities & QuestMoney) ? 1 : 0);
+        if (commonRows.size() + rows.size() + reserved <= 4096)
+        {
+            addCapability("QUESTPOOLS");
+            commonRows.insert(commonRows.end(), rows.begin(), rows.end());
+        }
+    }
+    auto reputationRows = (capabilities & QuestReputation)
+        ? QuestieBridge::GetQuestReputationFactionRows() : std::nullopt;
+    return {std::move(caps), std::move(commonRows), std::move(reputationRows), reportResets};
+}
+
 class QuestieBridgeWorldScript final : public WorldScript
 {
 public:
@@ -274,10 +361,32 @@ public:
         if (!capabilities)
         {
             Subscribers.clear();
+            _commonState.Reset();
             return;
         }
-        if (Subscribers.empty())
+        auto const now = Clock::now();
+        // Resolve and prune before sampling shared state. These pointers live
+        // only within this tick, while the subscriber map is locked.
+        std::vector<std::pair<Player*, Subscriber*>> active;
+        active.reserve(Subscribers.size());
+        bool replyRequested = false;
+        for (auto it = Subscribers.begin(); it != Subscribers.end();)
+        {
+            Player* player = ObjectAccessor::FindPlayer(it->first);
+            if (!player || now - it->second.LastRequest > std::chrono::seconds(45))
+            {
+                it = Subscribers.erase(it);
+                continue;
+            }
+            active.emplace_back(player, &it->second);
+            replyRequested = replyRequested || it->second.ReplyRequested;
+            ++it;
+        }
+        if (active.empty())
+        {
+            _commonState.Reset();
             return;
+        }
         bool const dirty = Dirty.exchange(false);
         if (_patrolCacheDirty.exchange(false))
         {
@@ -285,137 +394,57 @@ public:
             _patrolCached = false;
         }
         _patrolMaps.clear();
-        auto const now = Clock::now();
-        std::string caps;
-        std::vector<std::string> commonRows;
-        if (capabilities & Events)
+        auto const& common = _commonState.Get(now, capabilities, dirty, replyRequested,
+            [capabilities]() { return BuildCommonState(capabilities); });
+        for (auto const& [player, entry] : active)
         {
-            caps = "EVENTS";
-            auto const& events = sGameEventMgr->GetEventMap();
-            for (std::size_t id = 1; id < events.size() && id <= std::numeric_limits<uint16>::max(); ++id)
-            {
-                auto const& event = events[id];
-                if (!event.isValid())
-                    continue;
-                bool const mainStage = event.HolidayId != HOLIDAY_NONE
-                    && event.HolidayStage == sGameEventMgr->GetHolidayMainStage(event.HolidayId);
-                commonRows.push_back("E:" + std::to_string(id) + ':' + std::to_string(event.HolidayId)
-                    + (mainStage ? ":1:" : ":0:") + (sGameEventMgr->IsActiveEvent(uint16(id)) ? "1" : "0"));
-                // Never advertise a partial catalog as authoritative. Leave room for
-                // progress/subscriptions within the client's bounded snapshot limits.
-                if (commonRows.size() > 4000)
-                {
-                    caps.clear();
-                    commonRows.clear();
-                    break;
-                }
-            }
-        }
-        auto addCapability = [&caps](std::string const& value)
-        {
-            if (!caps.empty())
-                caps += ',';
-            caps += value;
-        };
-        if (capabilities & Values)
-            addCapability("VALUES");
-        uint64 const weeklyReset = sWorldState->getWorldState(WORLD_STATE_CUSTOM_WEEKLY_QUEST_RESET_TIME);
-        uint64 const monthlyReset = sWorldState->getWorldState(WORLD_STATE_CUSTOM_MONTHLY_QUEST_RESET_TIME);
-        bool const reportResets = (capabilities & Resets) && weeklyReset && monthlyReset
-            && weeklyReset <= std::numeric_limits<uint32>::max() && monthlyReset <= std::numeric_limits<uint32>::max();
-        if (reportResets)
-        {
-            addCapability("RESETS");
-            commonRows.push_back("P:QUEST_RESETS:" + std::to_string(weeklyReset) + ':' + std::to_string(monthlyReset));
-        }
-        if (capabilities & Progress)
-        {
-            addCapability("SCOURGE");
-            addCapability("QUELDANAS");
-            AppendQuestieBridgeProgress(commonRows);
-        }
-        addCapability("HEARTBEAT");
-        if (capabilities & Patrols)
-            addCapability("PATROLS");
-        if (capabilities & Kaluak)
-        {
-            addCapability("KALUAK");
-            commonRows.push_back("P:KA_FINISHED:" + GetQuestieBridgeKaluakFinished());
-        }
-        if (capabilities & Wintergrasp)
-        {
-            addCapability("WINTERGRASP");
-            AppendQuestieBridgeWintergrasp(commonRows);
-        }
-        if (capabilities & QuestPools)
-        {
-            auto const rows = GetQuestPoolRows();
-            // Reserve per-player worldstate and ICC rows. Never send a
-            // partial pool catalog: omissions would make inactive choices unknown.
-            std::size_t const reserved = 16 + (reportResets ? 1 : 0)
-                + ((capabilities & ICC) ? QuestieBridgeICCMaxRows : 0)
-                + ((capabilities & Phases) ? PhaseMaxRows : 0) + ((capabilities & QuestXP) ? 1 : 0)
-                + ((capabilities & QuestReputation) ? QuestieBridge::ReputationMaxRows : 0)
-                + ((capabilities & QuestMoney) ? 1 : 0);
-            if (commonRows.size() + rows.size() + reserved <= 4096)
-            {
-                addCapability("QUESTPOOLS");
-                commonRows.insert(commonRows.end(), rows.begin(), rows.end());
-            }
-        }
-        auto const reputationRows = (capabilities & QuestReputation)
-            ? QuestieBridge::GetQuestReputationFactionRows() : std::nullopt;
-        for (auto it = Subscribers.begin(); it != Subscribers.end();)
-        {
-            Subscriber& subscriber = it->second;
-            Player* player = ObjectAccessor::FindPlayer(it->first);
-            if (!player || now - subscriber.LastRequest > std::chrono::seconds(45))
-            {
-                it = Subscribers.erase(it);
-                continue;
-            }
+            Subscriber& subscriber = *entry;
             // Polling also observes worldstate changes for which AC has no universal hook.
-            if (dirty || subscriber.ReplyRequested || now - subscriber.LastSend >= std::chrono::seconds(2)
-                || subscriber.Previous.empty())
+            if (_commonState.ShouldCheckPlayer(now, subscriber.LastStateCheck, subscriber.CommonRevision,
+                dirty, subscriber.ReplyRequested, subscriber.Previous.empty()))
             {
-                auto rows = commonRows;
+                subscriber.LastStateCheck = now;
+                subscriber.CommonRevision = _commonState.GetRevision();
+                auto rows = common.Rows;
                 if (capabilities & Values)
                     for (uint32 id : subscriber.WorldStates)
                         rows.push_back("W:" + std::to_string(id) + ':'
                             + std::to_string(sWorldState->getWorldState(id)));
-                std::string playerCaps = caps;
-                if ((capabilities & Phases) && rows.size() + PhaseMaxRows + (reportResets ? 1 : 0) <= 4096)
+                std::string playerCaps = common.Caps;
+                if ((capabilities & Phases) && rows.size() + PhaseMaxRows + (common.ReportResets ? 1 : 0) <= 4096)
                 {
                     playerCaps += (playerCaps.empty() ? "" : ",");
                     playerCaps += "PHASES";
                     QuestieBridge::AppendPhases(player, rows);
                 }
-                if ((capabilities & ICC) && rows.size() + QuestieBridgeICCMaxRows + (reportResets ? 1 : 0) <= 4096)
+                if ((capabilities & ICC)
+                    && rows.size() + QuestieBridgeICCMaxRows + (common.ReportResets ? 1 : 0) <= 4096)
                 {
                     playerCaps += (playerCaps.empty() ? "" : ",");
                     playerCaps += "ICC";
                     AppendQuestieBridgeICC(player, rows);
                 }
-                if ((capabilities & QuestXP) && rows.size() + 1 + (reportResets ? 1 : 0) <= 4096
+                if ((capabilities & QuestXP) && rows.size() + 1 + (common.ReportResets ? 1 : 0) <= 4096
                     && QuestieBridge::AppendQuestXP(player, rows))
                     playerCaps += (playerCaps.empty() ? "" : ",") + std::string("QUESTXP");
-                if (reputationRows && rows.size() + reputationRows->size() + 1 + (reportResets ? 1 : 0) <= 4096
-                    && QuestieBridge::AppendQuestReputation(player, *reputationRows, rows))
+                if (common.ReputationRows
+                    && rows.size() + common.ReputationRows->size() + 1 + (common.ReportResets ? 1 : 0) <= 4096
+                    && QuestieBridge::AppendQuestReputation(player, *common.ReputationRows, rows))
                     playerCaps += (playerCaps.empty() ? "" : ",") + std::string("QUESTREP");
-                if ((capabilities & QuestMoney) && rows.size() + 1 + (reportResets ? 1 : 0) <= 4096
+                if ((capabilities & QuestMoney) && rows.size() + 1 + (common.ReportResets ? 1 : 0) <= 4096
                     && QuestieBridge::AppendQuestMoney(rows))
                     playerCaps += (playerCaps.empty() ? "" : ",") + std::string("QUESTMONEY");
                 std::string signature = playerCaps;
                 for (std::string const& row : rows)
                     signature += ';' + row;
                 bool const changed = signature != subscriber.Previous;
-                if (changed || subscriber.ReplyRequested || now - subscriber.LastSend >= std::chrono::seconds(10))
+                if (changed || subscriber.ReplyRequested)
                 {
                     if (changed)
                     {
                         // Sample the clock only when sending a snapshot. It must not
                         // change the signature and turn every heartbeat into a full batch.
-                        if (reportResets)
+                        if (common.ReportResets)
                             rows.push_back("P:SERVER_TIME:" + std::to_string(GameTime::GetGameTime().count()));
                         SendSnapshot(player, subscriber, playerCaps, rows);
                         subscriber.Previous = std::move(signature);
@@ -426,9 +455,14 @@ public:
                     subscriber.ReplyRequested = false;
                 }
             }
+            // Heartbeats and patrols retain their cadence even between state checks.
+            if (subscriber.SnapshotSequence && now - subscriber.LastSend >= std::chrono::seconds(10))
+            {
+                SendHeartbeat(player, subscriber);
+                subscriber.LastSend = now;
+            }
             if ((capabilities & Patrols) && subscriber.SnapshotSequence)
                 SendPatrol(player, subscriber);
-            ++it;
         }
     }
 
@@ -527,6 +561,7 @@ private:
         subscriber.PatrolSnapshot = subscriber.SnapshotSequence;
     }
 
+    QuestieBridge::CommonStateCache _commonState;
     uint32 _elapsed = 0;
     std::atomic<bool> _patrolCacheDirty{true};
     bool _patrolCached = false;

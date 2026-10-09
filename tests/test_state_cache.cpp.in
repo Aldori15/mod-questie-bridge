@@ -1,0 +1,174 @@
+/*
+ * Copyright (C) 2026 Questie contributors
+ * SPDX-License-Identifier: GPL-2.0-or-later
+ */
+
+// The .cpp.in suffix keeps this standalone main out of AC's recursive source collection.
+#include "QuestieBridgeStateCache.h"
+
+#include <iostream>
+#include <stdexcept>
+
+namespace
+{
+using namespace std::chrono_literals;
+using QuestieBridge::CommonState;
+using QuestieBridge::CommonStateCache;
+using QuestieBridge::StateClock;
+
+void Require(bool condition, char const* message)
+{
+    if (!condition)
+        throw std::runtime_error(message);
+}
+
+void TestRefreshAndOwnership()
+{
+    CommonStateCache cache;
+    auto const start = StateClock::time_point{};
+    CommonState source{"EVENTS,HEARTBEAT", {"E:5:0:0:0"}, std::nullopt, false};
+    int builds = 0;
+    auto build = [&]() { ++builds; return source; };
+    Require(cache.Get(start, 1, false, false, build).Rows == source.Rows, "initial state built");
+    auto revision = cache.GetRevision();
+    source.Rows[0] = "E:5:0:0:1";
+    Require(cache.Get(start + 1s, 1, false, false, build).Rows[0] == "E:5:0:0:0",
+        "cache owns values rather than borrowed source references");
+    Require(builds == 1, "intermediate tick must reuse cache");
+    Require(cache.Get(start + 2s, 1, false, false, build).Rows == source.Rows, "periodic change detected");
+    Require(builds == 2 && cache.GetRevision() != revision, "changed state advances revision");
+    revision = cache.GetRevision();
+    cache.Get(start + 4s, 1, false, false, build);
+    Require(builds == 3 && cache.GetRevision() == revision, "unchanged polling preserves revision");
+}
+
+void TestDirtyRequestsAndCapabilityReload()
+{
+    CommonStateCache cache;
+    auto const start = StateClock::time_point{};
+    CommonState source{"HEARTBEAT", {}, std::nullopt, false};
+    int builds = 0;
+    auto build = [&]() { ++builds; return source; };
+    cache.Get(start, 1, false, false, build);
+    auto revision = cache.GetRevision();
+    cache.Get(start + 100ms, 1, false, true, build);
+    Require(builds == 2 && cache.GetRevision() == revision, "ACK/WATCH refreshes without fake change");
+    source.Rows = {"Q:13830:5676:1", "Q:13832:5676:0"};
+    cache.Get(start + 200ms, 1, true, false, build);
+    Require(builds == 3 && cache.GetRevision() != revision, "dirty event refreshes immediately");
+    revision = cache.GetRevision();
+    cache.Get(start + 300ms, 2, false, false, build);
+    Require(builds == 4 && cache.GetRevision() != revision, "capability changes affect player checks");
+    revision = cache.GetRevision();
+    cache.Get(start + 400ms, 2, true, false, build);
+    Require(builds == 5 && cache.GetRevision() == revision, "same-mask config reload still rebuilds");
+}
+
+void TestCatalogChanges()
+{
+    CommonStateCache cache;
+    auto const start = StateClock::time_point{};
+    CommonState source{"HEARTBEAT", {}, std::nullopt, false};
+    auto build = [&]() { return source; };
+    cache.Get(start, 1, false, false, build);
+    auto revision = cache.GetRevision();
+    source.ReputationRows.emplace();
+    cache.Get(start + 2s, 1, false, false, build);
+    Require(cache.GetRevision() != revision, "empty complete rate catalog differs from unavailable");
+    revision = cache.GetRevision();
+    source.ReputationRows->push_back("T:1124:1065353216:1065353216:1065353216:1065353216:1065353216");
+    cache.Get(start + 4s, 1, false, false, build);
+    Require(cache.GetRevision() != revision, "faction rate reload changes revision");
+    revision = cache.GetRevision();
+    source.ReputationRows.reset();
+    cache.Get(start + 6s, 1, false, false, build);
+    Require(cache.GetRevision() != revision, "unavailable catalog cannot retain stale live rates");
+    revision = cache.GetRevision();
+    source.ReportResets = true;
+    cache.Get(start + 8s, 1, false, false, build);
+    Require(cache.GetRevision() != revision, "reset reporting changes are observed");
+    revision = cache.GetRevision();
+    source.Caps = "RESETS,HEARTBEAT";
+    source.Rows = {"P:QUEST_RESETS:1792058400:1793527200"};
+    cache.Get(start + 10s, 1, false, false, build);
+    Require(cache.GetRevision() != revision, "reset deadlines are part of cached data");
+    revision = cache.GetRevision();
+    source.Rows.clear();
+    cache.Get(start + 12s, 1, false, false, build);
+    Require(cache.GetRevision() != revision, "removed rows are not retained");
+}
+
+void TestPlayerChecks()
+{
+    CommonStateCache cache;
+    auto const start = StateClock::time_point{};
+    CommonState source{"HEARTBEAT", {}, std::nullopt, false};
+    auto build = [&]() { return source; };
+    cache.Get(start, 1, false, false, build);
+    auto const revision = cache.GetRevision();
+    Require(!cache.ShouldCheckPlayer(start + 1s, start, revision, false, false, false),
+        "unchanged player skips intermediate tick");
+    Require(cache.ShouldCheckPlayer(start + 2s, start, revision, false, false, false),
+        "player rates/auras/context are checked at interval");
+    Require(cache.ShouldCheckPlayer(start + 1s, start, revision, false, true, false),
+        "requesting player is checked immediately");
+    Require(cache.ShouldCheckPlayer(start + 1s, start, revision, true, false, false),
+        "dirty state bypasses interval");
+    Require(cache.ShouldCheckPlayer(start + 1s, start, revision, false, false, true),
+        "initial/lost snapshot is rebuilt");
+    source.Rows = {"P:KA_FINISHED:1"};
+    cache.Get(start + 1s, 1, false, true, build);
+    Require(cache.ShouldCheckPlayer(start + 1s, start, revision, false, false, false),
+        "new common state reaches players checked recently");
+}
+
+void TestResetAndIdleWork()
+{
+    CommonStateCache cache;
+    auto const start = StateClock::time_point{};
+    int builds = 0;
+    auto build = [&]() { ++builds; return CommonState{"HEARTBEAT", {}, std::nullopt, false}; };
+    cache.Get(start, 1, false, false, build);
+    auto const revision = cache.GetRevision();
+    cache.Reset();
+    cache.Get(start + 100ms, 1, false, false, build);
+    Require(builds == 2 && cache.GetRevision() != revision, "idle/disable reset forces a fresh next sample");
+
+    CommonStateCache idle;
+    builds = 0;
+    int playerChecks = 0;
+    StateClock::time_point lastCheck{};
+    std::uint64_t lastRevision = 0;
+    for (int tick = 0; tick < 1000; ++tick)
+    {
+        auto const now = start + std::chrono::seconds(tick);
+        idle.Get(now, 1, false, false, build);
+        if (idle.ShouldCheckPlayer(now, lastCheck, lastRevision, false, false, tick == 0))
+        {
+            ++playerChecks;
+            lastCheck = now;
+            lastRevision = idle.GetRevision();
+        }
+    }
+    Require(builds == 500 && playerChecks == 500, "1000 quiet ticks need only 500 builds/player checks");
+}
+}
+
+int main()
+{
+    try
+    {
+        TestRefreshAndOwnership();
+        TestDirtyRequestsAndCapabilityReload();
+        TestCatalogChanges();
+        TestPlayerChecks();
+        TestResetAndIdleWork();
+        std::cout << "Common state cache: 5 regression groups passed\n";
+        return 0;
+    }
+    catch (std::exception const& error)
+    {
+        std::cerr << error.what() << '\n';
+        return 1;
+    }
+}

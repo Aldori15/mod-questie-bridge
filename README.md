@@ -15,6 +15,7 @@ Install both this server module and Questie-335 to use the bridge.
 - ICC weekly quests follow the selected family, raid size, and unlocks in each player's current raid instance.
 - Weekly and monthly quest completion history follows the server's reset schedule.
 - Quest XP displays follow the character's effective normal/dungeon-finder rates and active quest-XP auras, including heirlooms.
+- Quest reputation previews follow global/faction rates, reputation auras, grey-quest reduction, and eligible RAF bonuses.
 - Wintergrasp quests and questgiver locations as faction control changes.
 - Questgiver markers follow loaded patrols and moving transport passengers in your current zone,
   including Orgrim's Hammer and the Skybreaker.
@@ -70,6 +71,7 @@ then run `.reload config` in game.
 | `QuestieBridge.Phases` | NPC and object quest locations in supported story regions |
 | `QuestieBridge.Patrols` | Live positions of moving questgivers and transport passengers in the player's zone |
 | `QuestieBridge.QuestXP` | Effective normal/DF quest XP rates and the character's active quest-XP aura multiplier |
+| `QuestieBridge.QuestReputation` | Global/faction quest reputation rates, active reputation auras, grey-quest reduction and RAF eligibility |
 
 Disabling `Progress` also removes live Scourge activity reporting. Quel'Danas quest unlocks use `Events`
 and continue working independently of progress displays.
@@ -85,6 +87,7 @@ and continue working independently of progress displays.
 - `/qserver phases`: current phase context and story-phase location visibility.
 - `/qserver patrol` or `/qserver patrol <NPC ID>`: live questgiver positions in your current zone.
 - `/qserver xp`: effective normal/DF quest XP rates, active quest-XP aura multiplier, and server level cap.
+- `/qserver rep` or `/qserver rep <faction ID>`: live reputation modifiers and faction rates for each quest type.
 
 Quest XP reads `Player::GetQuestRate(false/true)`, including `OnPlayerGetQuestRate` overrides,
 and the character's active `SPELL_AURA_MOD_XP_QUEST_PCT` multiplier. Values are sampled in the
@@ -95,6 +98,26 @@ The module reads state without changing rewards or running reward/mutation hooks
 Missing/disabled/stale XP data restores Questie's generated XP and equipped-item calculation.
 Finite multipliers from 0 through 1000 are supported; invalid values omit this optional capability.
 The XP values preserve the core's float precision and separate rate/aura truncation steps.
+
+Quest reputation reads `Rate.Reputation.Gain`, `Rate.Reputation.LowLevel.Quest`, the character's
+`SPELL_AURA_MOD_REPUTATION_GAIN` modifier, and the currently eligible recruit-a-friend reputation multiplier.
+The server also sends its complete loaded faction rate catalog for normal, daily, weekly, monthly,
+and repeatable quests. `.reload config` and `.reload reputation_reward_rate` changes are picked up
+without addon reload or regeneration. The catalog is shared across subscribers during each state check;
+no SQL is polled. Missing catalog entries mean the core's default 1x, overriding generated rates.
+Live aura data replaces the racial estimate; gains and losses use the core's different aura signs.
+Faction-specific kill auras and championing tabards do not change quest rewards.
+
+`QUESTREP` describes rates applied to generated base rewards, not an exact reward oracle. The preview
+uses core float operation order and integer truncation. AC alternates faction rounding between truncation
+and ceil, so a final reward can differ by one point. Reputation caps, hostile-faction suppression,
+custom spillover tables, fractional base rewards omitted by generated data, and later script hooks can
+also change the final amount. Existing Aldor/Scryer penalty and Sha'tar display rules remain in place;
+the global rate applies once to estimated spillover penalties.
+Missing/disabled/stale reputation data restores generated faction rates and racial bonuses.
+The complete catalog is limited to 256 factions; rates must be finite multipliers from 0 through 1000,
+and the total aura modifier must be within -10000 through 10000 percent. Unsupported data or insufficient
+snapshot capacity omits this optional capability rather than sending a partial catalog.
 
 ICC selection applies while the player is inside that raid. Outside ICC, Questie keeps its existing behavior.
 

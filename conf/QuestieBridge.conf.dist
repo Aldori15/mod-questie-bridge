@@ -54,3 +54,8 @@ QuestieBridge.Patrols = 1
 # Includes GetQuestRate module overrides and heirlooms. Does not execute reward hooks.
 # Unknown/invalid rates keep Questie's generated XP calculation. Does not change quest money.
 QuestieBridge.QuestXP = 1
+
+# Report global/faction quest reputation rates, reputation auras, grey-quest reduction and RAF.
+# Reads loaded server state without executing reputation reward/change hooks.
+# Unknown/invalid rates keep Questie's generated faction rates and racial bonus estimate.
+QuestieBridge.QuestReputation = 1

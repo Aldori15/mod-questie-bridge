@@ -26,6 +26,7 @@
 #include "QuestieBridgeProgress.h"
 #include "QuestieBridgeWintergrasp.h"
 #include "QuestieBridgeXP.h"
+#include "QuestieBridgeReputation.h"
 
 #include <atomic>
 #include <charconv>
@@ -43,7 +44,7 @@
 namespace
 {
 constexpr char Envelope[] = "QSTSVR\t";
-constexpr uint32 ProtocolVersion = 13;
+constexpr uint32 ProtocolVersion = 14;
 constexpr char ModuleVersion[] = "0.1.0";
 constexpr uint32 Events = 1;
 constexpr uint32 Values = 2;
@@ -56,9 +57,10 @@ constexpr uint32 Resets = 128;
 constexpr uint32 Phases = 256;
 constexpr uint32 Patrols = 512;
 constexpr uint32 QuestXP = 1024;
+constexpr uint32 QuestReputation = 2048;
 constexpr std::size_t PhaseMaxRows = QuestieBridge::PhaseMaxRows;
 std::atomic<uint32> Capabilities{Events | Values | Progress | Kaluak | QuestPools | Wintergrasp | ICC
-    | Resets | Phases | Patrols | QuestXP};
+    | Resets | Phases | Patrols | QuestXP | QuestReputation};
 std::atomic<bool> Dirty{false};
 using Clock = std::chrono::steady_clock;
 
@@ -247,6 +249,8 @@ public:
                 caps |= Patrols;
             if (sConfigMgr->GetOption<bool>("QuestieBridge.QuestXP", true))
                 caps |= QuestXP;
+            if (sConfigMgr->GetOption<bool>("QuestieBridge.QuestReputation", true))
+                caps |= QuestReputation;
         }
         _patrolCacheDirty.store(true);
         Capabilities.store(caps);
@@ -346,13 +350,16 @@ public:
             // partial pool catalog: omissions would make inactive choices unknown.
             std::size_t const reserved = 16 + (reportResets ? 1 : 0)
                 + ((capabilities & ICC) ? QuestieBridgeICCMaxRows : 0)
-                + ((capabilities & Phases) ? PhaseMaxRows : 0) + ((capabilities & QuestXP) ? 1 : 0);
+                + ((capabilities & Phases) ? PhaseMaxRows : 0) + ((capabilities & QuestXP) ? 1 : 0)
+                + ((capabilities & QuestReputation) ? QuestieBridge::ReputationMaxRows : 0);
             if (commonRows.size() + rows.size() + reserved <= 4096)
             {
                 addCapability("QUESTPOOLS");
                 commonRows.insert(commonRows.end(), rows.begin(), rows.end());
             }
         }
+        auto const reputationRows = (capabilities & QuestReputation)
+            ? QuestieBridge::GetQuestReputationFactionRows() : std::nullopt;
         for (auto it = Subscribers.begin(); it != Subscribers.end();)
         {
             Subscriber& subscriber = it->second;
@@ -387,6 +394,9 @@ public:
                 if ((capabilities & QuestXP) && rows.size() + 1 + (reportResets ? 1 : 0) <= 4096
                     && QuestieBridge::AppendQuestXP(player, rows))
                     playerCaps += (playerCaps.empty() ? "" : ",") + std::string("QUESTXP");
+                if (reputationRows && rows.size() + reputationRows->size() + 1 + (reportResets ? 1 : 0) <= 4096
+                    && QuestieBridge::AppendQuestReputation(player, *reputationRows, rows))
+                    playerCaps += (playerCaps.empty() ? "" : ",") + std::string("QUESTREP");
                 std::string signature = playerCaps;
                 for (std::string const& row : rows)
                     signature += ';' + row;

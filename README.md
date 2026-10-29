@@ -8,6 +8,7 @@ Install both the module and addon to use these features.
 
 - Live holidays, fishing tournaments, Scourge Invasion, and Isle of Quel'Danas unlocks.
 - Selected daily/weekly quest pools, ICC weekly quests, and Wintergrasp control.
+- Quests explicitly disabled by the running AzerothCore server.
 - Weekly/monthly quest resets and live XP, reputation, and money rates.
 - Moving questgiver markers in your current zone, including Orgrim's Hammer and the Skybreaker.
 - Phase-dependent locations in supported story areas, including Icecrown, Storm Peaks, and the death knight start.
@@ -44,6 +45,7 @@ All options default to `1` (enabled). Set an option to `0` to disable it, then r
 | `QuestieBridge.Progress` | Scourge activity and World Progress displays |
 | `QuestieBridge.Kaluak` | Kalu'ak winner-dependent quests |
 | `QuestieBridge.QuestPools` | Daily/weekly quest pool selections |
+| `QuestieBridge.QuestDisables` | Quests disabled through the loaded DisableMgr |
 | `QuestieBridge.Wintergrasp` | Wintergrasp quests and questgiver locations |
 | `QuestieBridge.ICC` | Weekly quests in the player's current ICC instance |
 | `QuestieBridge.Resets` | Weekly/monthly reset timing |
@@ -58,6 +60,7 @@ All options default to `1` (enabled). Set an option to `0` to disable it, then r
 | Command | Shows |
 | --- | --- |
 | `/qserver` | Connection, versions, and live state |
+| `/qserver quest <quest ID>` | Whether a quest is explicitly disabled on the server |
 | `/qserver pool <pool ID>` | Selected quests in a pool; for example, `5678` for raid weeklies |
 | `/qserver wintergrasp` | Wintergrasp control and battle state |
 | `/qserver icc` | Weekly quests in your current ICC instance |

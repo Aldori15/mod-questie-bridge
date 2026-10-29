@@ -28,6 +28,9 @@ QuestieBridge.Kaluak = 1
 # Includes custom pools; inactive members are hidden before visiting a questgiver.
 QuestieBridge.QuestPools = 1
 
+# Report quests disabled through AzerothCore's loaded DisableMgr.
+QuestieBridge.QuestDisables = 1
+
 # Report Wintergrasp control/battle state and scripted attacker/defender quest gates.
 # Includes the eight attacking variants that inherit a defending pool selection.
 QuestieBridge.Wintergrasp = 1

@@ -6,6 +6,7 @@
 #include "Chat.h"
 #include "Config.h"
 #include "Creature.h"
+#include "DisableMgr.h"
 #include "GameEventMgr.h"
 #include "GameTime.h"
 #include "GitRevision.h"
@@ -30,6 +31,7 @@
 #include "QuestieBridgeMoney.h"
 #include "QuestieBridgeStateCache.h"
 
+#include <algorithm>
 #include <atomic>
 #include <charconv>
 #include <chrono>
@@ -46,7 +48,7 @@
 namespace
 {
 constexpr char Envelope[] = "QSTSVR\t";
-constexpr uint32 ProtocolVersion = 15;
+constexpr uint32 ProtocolVersion = 16;
 constexpr char ModuleVersion[] = "0.1.0";
 constexpr uint32 Events = 1;
 constexpr uint32 Values = 2;
@@ -61,9 +63,10 @@ constexpr uint32 Patrols = 512;
 constexpr uint32 QuestXP = 1024;
 constexpr uint32 QuestReputation = 2048;
 constexpr uint32 QuestMoney = 4096;
+constexpr uint32 QuestDisables = 8192;
 constexpr std::size_t PhaseMaxRows = QuestieBridge::PhaseMaxRows;
 std::atomic<uint32> Capabilities{Events | Values | Progress | Kaluak | QuestPools | Wintergrasp | ICC
-    | Resets | Phases | Patrols | QuestXP | QuestReputation | QuestMoney};
+    | Resets | Phases | Patrols | QuestXP | QuestReputation | QuestMoney | QuestDisables};
 std::atomic<bool> Dirty{false};
 using Clock = std::chrono::steady_clock;
 
@@ -300,6 +303,29 @@ QuestieBridge::CommonState BuildCommonState(uint32 capabilities)
             commonRows.insert(commonRows.end(), rows.begin(), rows.end());
         }
     }
+
+    if (capabilities & QuestDisables)
+    {
+        std::vector<uint32> disabled;
+        for (auto const& [questId, quest] : sObjectMgr->GetQuestTemplates())
+            if (quest && sDisableMgr->IsDisabledFor(DISABLE_TYPE_QUEST, questId, nullptr))
+                disabled.push_back(questId);
+
+        std::size_t const reserved = 16 + (reportResets ? 1 : 0)
+            + ((capabilities & ICC) ? QuestieBridgeICCMaxRows : 0)
+            + ((capabilities & Phases) ? PhaseMaxRows : 0) + ((capabilities & QuestXP) ? 1 : 0)
+            + ((capabilities & QuestReputation) ? QuestieBridge::ReputationMaxRows : 0)
+            + ((capabilities & QuestMoney) ? 1 : 0);
+
+        if (commonRows.size() + disabled.size() + reserved <= 4096)
+        {
+            std::sort(disabled.begin(), disabled.end());
+            addCapability("QUESTDISABLES");
+            for (uint32 questId : disabled)
+                commonRows.push_back("D:" + std::to_string(questId));
+        }
+    }
+
     auto reputationRows = (capabilities & QuestReputation)
         ? QuestieBridge::GetQuestReputationFactionRows() : std::nullopt;
     return {std::move(caps), std::move(commonRows), std::move(reputationRows), reportResets};
@@ -326,6 +352,8 @@ public:
                 caps |= Kaluak;
             if (sConfigMgr->GetOption<bool>("QuestieBridge.QuestPools", true))
                 caps |= QuestPools;
+            if (sConfigMgr->GetOption<bool>("QuestieBridge.QuestDisables", true))
+                caps |= QuestDisables;
             if (sConfigMgr->GetOption<bool>("QuestieBridge.Wintergrasp", true))
                 caps |= Wintergrasp;
             if (sConfigMgr->GetOption<bool>("QuestieBridge.ICC", true))

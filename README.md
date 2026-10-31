@@ -102,6 +102,37 @@ quest rewards, requirements, or reset schedules, and players without the addon c
 Entirely new custom quests still need addon data. For a protocol mismatch, install matching builds.
 Include `/qserver` output when [reporting an issue](https://github.com/Aldori15/mod-questie-bridge/issues).
 
+## Protocol
+
+Protocol **19** requires a matching addon. `INFO~1` remains the independent version
+diagnostic handshake; a mismatch restores static addon behavior without downgrading.
+
+Snapshots retain `BEGIN` / `PART` / `END`, with compact capabilities in the same field:
+
+```text
+BEGIN~19~token~sequence~mask~rowCount~partCount
+```
+
+The mask contains one to four uppercase, eight-digit hexadecimal 32-bit words,
+lowest capability range first, separated by `.`. Trailing zero words are omitted;
+the empty mask is `00000000`. All current capabilities together are `0003FFFF`.
+These permanent wire bits are independent of the internal configuration flags:
+
+| Bit | Capability | Bit | Capability |
+| --- | --- | --- | --- |
+| 0 | EVENTS | 9 | RESETS |
+| 1 | VALUES | 10 | PHASES |
+| 2 | SCOURGE | 11 | PATROLS |
+| 3 | QUELDANAS | 12 | QUESTXP |
+| 4 | KALUAK | 13 | QUESTREP |
+| 5 | HEARTBEAT | 14 | QUESTMONEY |
+| 6 | QUESTPOOLS | 15 | QUESTDISABLES |
+| 7 | WINTERGRASP | 16 | QUESTGIVERS |
+| 8 | ICC | 17 | QUESTGIVERTEMPLATES |
+
+Bits 18–127 are unassigned and rejected when set. Each word is decoded separately to
+preserve Lua 5.1 numeric precision.
+
 ## License
 
 GPL-2.0-or-later.

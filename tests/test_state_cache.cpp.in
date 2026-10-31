@@ -5,6 +5,7 @@
 
 // The .cpp.in suffix keeps this standalone main out of AC's recursive source collection.
 #include "QuestieBridgeStateCache.h"
+#include "QuestieBridgeProtocol.h"
 
 #include <iostream>
 #include <stdexcept>
@@ -20,6 +21,78 @@ void Require(bool condition, char const* message)
 {
     if (!condition)
         throw std::runtime_error(message);
+}
+
+void TestWireCapabilities()
+{
+    std::array<std::string_view, 18> const names = {{
+        "EVENTS", "VALUES", "SCOURGE", "QUELDANAS", "KALUAK", "HEARTBEAT",
+        "QUESTPOOLS", "WINTERGRASP", "ICC", "RESETS", "PHASES", "PATROLS",
+        "QUESTXP", "QUESTREP", "QUESTMONEY", "QUESTDISABLES", "QUESTGIVERS", "QUESTGIVERTEMPLATES"
+    }};
+    std::string all;
+    for (std::size_t index = 0; index < names.size(); ++index)
+    {
+        QuestieBridge::CapabilityMask mask{};
+        mask[0] = std::uint32_t{1} << index;
+        Require(QuestieBridge::EncodeCapabilities(names[index]) == QuestieBridge::EncodeCapabilityMask(mask),
+            "each named capability keeps its assigned wire bit");
+        if (!all.empty())
+            all += ',';
+        all += names[index];
+    }
+    Require(QuestieBridge::EncodeCapabilities(all) == "0003FFFF", "all wire capabilities fit one word");
+    Require(QuestieBridge::EncodeCapabilities("HEARTBEAT,EVENTS") == "00000021", "name order is irrelevant");
+    Require(QuestieBridge::EncodeCapabilities("") == "00000000", "empty capability set has one zero word");
+    for (auto invalid : {"UNKNOWN", "EVENTS,EVENTS", ",EVENTS", "EVENTS,", "EVENTS,,HEARTBEAT"})
+        Require(!QuestieBridge::EncodeCapabilities(invalid), "unknown, duplicate and empty names fail closed");
+    Require(QuestieBridge::EncodeCapabilityMask({0x80000000U, 0, 0, 0}) == "80000000",
+        "bit 31 stays unsigned and trailing zero words are omitted");
+    Require(QuestieBridge::EncodeCapabilityMask({0, 1, 0, 0}) == "00000000.00000001",
+        "bit 32 starts the second word");
+    Require(QuestieBridge::EncodeCapabilityMask({0xFFFFFFFFU, 0, 0, 0x80000000U})
+        == "FFFFFFFF.00000000.00000000.80000000", "bit 127 preserves intermediate zero words");
+}
+
+void TestSnapshotEncoding()
+{
+    using QuestieBridge::BuildSnapshotMessages;
+    std::string const token(32, 'T');
+    constexpr std::uint64_t sequence = 9007199254740991ULL;
+    std::string all;
+    for (auto const& capability : QuestieBridge::WireCapabilities)
+    {
+        if (!all.empty())
+            all += ',';
+        all += capability.Name;
+    }
+    auto const full = BuildSnapshotMessages(token, sequence, all, std::vector<std::string>(4096, std::string(36, 'x')));
+    Require(full && full->size() == 1026, "maximum rows and parts form one complete batch");
+    Require(full->front() == "BEGIN~19~" + token + "~9007199254740991~0003FFFF~4096~1024",
+        "maximum BEGIN uses compact capabilities");
+    Require(full->front().size() == 77, "maximum current BEGIN leaves 163 bytes of headroom");
+    Require(full->back() == "END~19~" + token + "~9007199254740991", "END retains the snapshot anchor");
+    for (auto const& message : *full)
+        Require(message.size() <= 240, "every serialized message obeys the payload limit");
+    auto const empty = BuildSnapshotMessages("t", 1, "", {});
+    Require(empty && *empty == std::vector<std::string>{"BEGIN~19~t~1~00000000~0~0", "END~19~t~1"},
+        "empty snapshots remain complete and atomic");
+    auto const packed = BuildSnapshotMessages("t", 2, "EVENTS,HEARTBEAT", {"E:1:0:0:1", "E:2:0:0:0"});
+    Require(packed && (*packed)[1] == "PART~19~t~2~1~E:1:0:0:1;E:2:0:0:0", "multipart row encoding is unchanged");
+    Require(BuildSnapshotMessages(token, sequence, "HEARTBEAT", {std::string(150, 'x')}).has_value(),
+        "maximum part body fits with the longest token and sequence");
+    Require(!BuildSnapshotMessages(token, sequence, "HEARTBEAT", {std::string(151, 'x')}),
+        "oversized single row cannot produce an oversized PART");
+    Require(!BuildSnapshotMessages(token, sequence, "HEARTBEAT", std::vector<std::string>(1025, std::string(150, 'x'))),
+        "too many parts reject the entire snapshot");
+    Require(!BuildSnapshotMessages(token, sequence, "HEARTBEAT", std::vector<std::string>(4097, "D:1")),
+        "too many rows reject the entire snapshot");
+    Require(!BuildSnapshotMessages(token, sequence, "HEARTBEAT", {""}), "empty rows are rejected");
+    Require(!BuildSnapshotMessages(token, sequence, "UNKNOWN", {}), "unknown capabilities cannot be advertised");
+    Require(!BuildSnapshotMessages(token + 'T', sequence, "HEARTBEAT", {}), "oversized tokens are rejected");
+    Require(!BuildSnapshotMessages("bad~token", sequence, "HEARTBEAT", {}), "invalid tokens are rejected");
+    Require(!BuildSnapshotMessages(token, 0, "HEARTBEAT", {}), "zero sequence is rejected");
+    Require(!BuildSnapshotMessages(token, sequence + 1, "HEARTBEAT", {}), "inexact Lua sequences are rejected");
 }
 
 void TestRefreshAndOwnership()
@@ -277,7 +350,9 @@ int main()
         TestQuestgiverCatalog();
         TestMapCandidates();
         TestObservableCreatures();
-        std::cout << "Common state cache: 8 regression groups passed\n";
+        TestWireCapabilities();
+        TestSnapshotEncoding();
+        std::cout << "Common state cache and protocol: 10 regression groups passed\n";
         return 0;
     }
     catch (std::exception const& error)

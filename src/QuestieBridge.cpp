@@ -30,6 +30,7 @@
 #include "QuestieBridgeReputation.h"
 #include "QuestieBridgeMoney.h"
 #include "QuestieBridgeStateCache.h"
+#include "QuestieBridgeProtocol.h"
 
 #include <algorithm>
 #include <atomic>
@@ -48,7 +49,7 @@
 namespace
 {
 constexpr char Envelope[] = "QSTSVR\t";
-constexpr uint32 ProtocolVersion = 18;
+using QuestieBridge::ProtocolVersion;
 constexpr char ModuleVersion[] = "0.1.0";
 constexpr uint32 Events = 1;
 constexpr uint32 Values = 2;
@@ -192,32 +193,17 @@ void SendInfo(Player* player, std::string const& token, char const* status)
         + '~' + revision + '~' + status);
 }
 
-void SendSnapshot(Player* player, Subscriber& subscriber, std::string const& caps,
+bool SendSnapshot(Player* player, Subscriber& subscriber, std::string const& caps,
     std::vector<std::string> const& rows)
 {
-    std::vector<std::string> parts;
-    std::string part;
-    for (std::string const& row : rows)
-    {
-        if (!part.empty() && part.size() + row.size() + 1 > 150)
-        {
-            parts.push_back(part);
-            part.clear();
-        }
-        if (!part.empty())
-            part += ';';
-        part += row;
-    }
-    if (!part.empty())
-        parts.push_back(part);
-    std::string const header = "~" + std::to_string(ProtocolVersion) + '~' + subscriber.Token
-        + '~' + std::to_string(++subscriber.Sequence);
+    auto const messages = QuestieBridge::BuildSnapshotMessages(subscriber.Token, subscriber.Sequence + 1, caps, rows);
+    if (!messages)
+        return false;
+    ++subscriber.Sequence;
     subscriber.SnapshotSequence = subscriber.Sequence;
-    Send(player, "BEGIN" + header + '~' + caps + '~' + std::to_string(rows.size())
-        + '~' + std::to_string(parts.size()));
-    for (std::size_t index = 0; index < parts.size(); ++index)
-        Send(player, "PART" + header + '~' + std::to_string(index + 1) + '~' + parts[index]);
-    Send(player, "END" + header);
+    for (auto const& message : *messages)
+        Send(player, message);
+    return true;
 }
 
 void SendHeartbeat(Player* player, Subscriber& subscriber)
@@ -561,7 +547,12 @@ public:
                         // change the signature and turn every heartbeat into a full batch.
                         if (common.ReportResets)
                             rows.push_back("P:SERVER_TIME:" + std::to_string(GameTime::GetGameTime().count()));
-                        SendSnapshot(player, subscriber, playerCaps, rows);
+                        if (!SendSnapshot(player, subscriber, playerCaps, rows))
+                        {
+                            subscriber.Previous.clear();
+                            subscriber.SnapshotSequence = 0;
+                            continue;
+                        }
                         subscriber.Previous = std::move(signature);
                     }
                     else

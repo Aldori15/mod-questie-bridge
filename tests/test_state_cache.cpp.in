@@ -152,6 +152,72 @@ void TestResetAndIdleWork()
     }
     Require(builds == 500 && playerChecks == 500, "1000 quiet ticks need only 500 builds/player checks");
 }
+
+void TestQuestgiverCatalog()
+{
+    CommonStateCache cache;
+    CommonState source{"HEARTBEAT", {}, std::nullopt, false};
+    source.StarterEntries = {823, 824};
+    source.RestrictedGiverTemplates = {823};
+    source.GiverTemplateRows = {"P:QGT_COUNT:1", "N:823"};
+    int builds = 0;
+    auto build = [&]() { ++builds; return source; };
+    auto const start = StateClock::time_point{};
+    auto const& common = cache.Get(start, 1, false, false, build);
+    auto const revision = cache.GetRevision();
+    for (int player = 0; player < 1000; ++player)
+    {
+        std::vector<std::string> rows(4091, "E:1:0:0:0");
+        std::string caps = "QUESTGIVERS";
+        Require(common.AppendGiverTemplates(rows, caps, 3), "complete catalog fits exact row boundary");
+        Require(rows.size() == 4093 && rows.back() == "N:823", "every player receives the complete shared catalog");
+        Require(caps == "QUESTGIVERS,QUESTGIVERTEMPLATES", "only complete catalogs advertise authority");
+    }
+    Require(builds == 1 && common.RestrictedGiverTemplates.contains(823), "global catalog shared across players");
+    std::vector<std::string> rows(4092, "E:1:0:0:0");
+    auto const before = rows;
+    std::string caps = "QUESTGIVERS";
+    Require(!common.AppendGiverTemplates(rows, caps, 3) && rows == before && caps == "QUESTGIVERS",
+        "overflow does not append a partial catalog or capability");
+    source.RestrictedGiverTemplates.clear();
+    source.GiverTemplateRows = {"P:QGT_COUNT:0"};
+    cache.Get(start + 2s, 1, false, false, build);
+    Require(cache.GetRevision() != revision, "template restoration advances revision");
+    auto const restored = cache.GetRevision();
+    cache.Get(start + 4s, 1, false, false, build);
+    Require(cache.GetRevision() == restored, "unchanged template polling preserves revision");
+    source.GiverTemplateRows.reset();
+    cache.Get(start + 5s, 2, true, false, build);
+    Require(cache.GetRevision() != restored, "capability removal invalidates global state");
+    rows.clear();
+    Require(!cache.Get(start + 5s, 2, false, false, build).AppendGiverTemplates(rows, caps, 0),
+        "unavailable catalog is distinct from an empty complete catalog");
+}
+
+void TestMapCandidates()
+{
+    QuestieBridge::MapQuestCreatureCache cache;
+    int scans = 0;
+    auto build = [&]()
+    {
+        ++scans;
+        return QuestieBridge::MapQuestCreatures{{111, 222}, {222}};
+    };
+    for (int player = 0; player < 1000; ++player)
+    {
+        auto const& candidates = cache.Get(571, 1, build);
+        Require(candidates.Starters.contains(111) && candidates.Patrols.contains(222),
+            "both samplers share candidates");
+    }
+    Require(scans == 1, "1000 subscribers scan the map store only once per tick");
+    cache.Get(571, 2, build);
+    cache.Get(0, 1, build);
+    Require(scans == 3, "map and instance identities never share candidates");
+    cache.Reset();
+    cache.Get(571, 1, build);
+    Require(scans == 4, "next tick rebuilds after spawn or movement changes");
+}
+
 }
 
 int main()
@@ -163,7 +229,9 @@ int main()
         TestCatalogChanges();
         TestPlayerChecks();
         TestResetAndIdleWork();
-        std::cout << "Common state cache: 5 regression groups passed\n";
+        TestQuestgiverCatalog();
+        TestMapCandidates();
+        std::cout << "Common state cache: 7 regression groups passed\n";
         return 0;
     }
     catch (std::exception const& error)

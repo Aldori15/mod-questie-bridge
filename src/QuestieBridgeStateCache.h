@@ -8,7 +8,9 @@
 
 #include <chrono>
 #include <cstdint>
+#include <map>
 #include <optional>
+#include <set>
 #include <string>
 #include <utility>
 #include <vector>
@@ -24,8 +26,47 @@ struct CommonState
     std::vector<std::string> Rows;
     std::optional<std::vector<std::string>> ReputationRows;
     bool ReportResets = false;
+    std::set<std::uint32_t> StarterEntries = {};
+    std::set<std::uint32_t> PatrolEntries = {};
+    std::set<std::uint32_t> RestrictedGiverTemplates = {};
+    std::optional<std::vector<std::string>> GiverTemplateRows = std::nullopt;
+
+    bool AppendGiverTemplates(std::vector<std::string>& rows, std::string& caps, std::size_t reserved) const
+    {
+        if (!GiverTemplateRows || rows.size() + GiverTemplateRows->size() + reserved > 4096)
+            return false;
+        caps += (caps.empty() ? "" : ",") + std::string("QUESTGIVERTEMPLATES");
+        rows.insert(rows.end(), GiverTemplateRows->begin(), GiverTemplateRows->end());
+        return true;
+    }
 
     bool operator==(CommonState const&) const = default;
+};
+
+struct MapQuestCreatures
+{
+    std::set<std::uint32_t> Starters;
+    std::set<std::uint32_t> Patrols;
+};
+
+// Rebuilt each world tick; store spawn identities, never core-owned pointers.
+class MapQuestCreatureCache
+{
+public:
+    template <typename Builder>
+    MapQuestCreatures const& Get(std::uint32_t map, std::uint32_t instance, Builder&& builder)
+    {
+        auto const key = std::make_pair(map, instance);
+        auto found = _maps.find(key);
+        if (found == _maps.end())
+            found = _maps.emplace(key, std::forward<Builder>(builder)()).first;
+        return found->second;
+    }
+
+    void Reset() { _maps.clear(); }
+
+private:
+    std::map<std::pair<std::uint32_t, std::uint32_t>, MapQuestCreatures> _maps;
 };
 
 // Own only serialized values. Players, NPCs and core-owned catalogs are sampled

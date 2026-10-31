@@ -48,7 +48,7 @@
 namespace
 {
 constexpr char Envelope[] = "QSTSVR\t";
-constexpr uint32 ProtocolVersion = 17;
+constexpr uint32 ProtocolVersion = 18;
 constexpr char ModuleVersion[] = "0.1.0";
 constexpr uint32 Events = 1;
 constexpr uint32 Values = 2;
@@ -65,9 +65,11 @@ constexpr uint32 QuestReputation = 2048;
 constexpr uint32 QuestMoney = 4096;
 constexpr uint32 QuestDisables = 8192;
 constexpr uint32 Questgivers = 16384;
+constexpr uint32 QuestgiverTemplates = 32768;
 constexpr std::size_t PhaseMaxRows = QuestieBridge::PhaseMaxRows;
 std::atomic<uint32> Capabilities{Events | Values | Progress | Kaluak | QuestPools | Wintergrasp | ICC
-    | Resets | Phases | Patrols | QuestXP | QuestReputation | QuestMoney | QuestDisables | Questgivers};
+    | Resets | Phases | Patrols | QuestXP | QuestReputation | QuestMoney
+    | QuestDisables | Questgivers | QuestgiverTemplates};
 std::atomic<bool> Dirty{false};
 using Clock = std::chrono::steady_clock;
 
@@ -329,7 +331,34 @@ QuestieBridge::CommonState BuildCommonState(uint32 capabilities)
 
     auto reputationRows = (capabilities & QuestReputation)
         ? QuestieBridge::GetQuestReputationFactionRows() : std::nullopt;
-    return {std::move(caps), std::move(commonRows), std::move(reputationRows), reportResets};
+    QuestieBridge::CommonState common{std::move(caps), std::move(commonRows), std::move(reputationRows), reportResets};
+    if (capabilities & (Questgivers | QuestgiverTemplates | Patrols))
+    {
+        for (auto const& relation : *sObjectMgr->GetCreatureQuestRelationMap())
+            common.StarterEntries.insert(relation.first);
+        for (auto const& relation : sPoolMgr->mQuestCreatureRelation)
+            common.StarterEntries.insert(relation.second);
+    }
+    if (capabilities & Patrols)
+    {
+        common.PatrolEntries = common.StarterEntries;
+        for (auto const& relation : *sObjectMgr->GetCreatureQuestInvolvedRelationMap())
+            common.PatrolEntries.insert(relation.first);
+    }
+    if (capabilities & QuestgiverTemplates)
+    {
+        for (uint32 entry : common.StarterEntries)
+            if (CreatureTemplate const* info = sObjectMgr->GetCreatureTemplate(entry))
+                if (!(info->npcflag & UNIT_NPC_FLAG_QUESTGIVER))
+                    common.RestrictedGiverTemplates.insert(entry);
+
+        std::vector<std::string> rows;
+        rows.push_back("P:QGT_COUNT:" + std::to_string(common.RestrictedGiverTemplates.size()));
+        for (uint32 entry : common.RestrictedGiverTemplates)
+            rows.push_back("N:" + std::to_string(entry));
+        common.GiverTemplateRows = std::move(rows);
+    }
+    return common;
 }
 
 class QuestieBridgeWorldScript final : public WorldScript
@@ -357,6 +386,8 @@ public:
                 caps |= QuestDisables;
             if (sConfigMgr->GetOption<bool>("QuestieBridge.Questgivers", true))
                 caps |= Questgivers;
+            if (sConfigMgr->GetOption<bool>("QuestieBridge.QuestgiverTemplates", true))
+                caps |= QuestgiverTemplates;
             if (sConfigMgr->GetOption<bool>("QuestieBridge.Wintergrasp", true))
                 caps |= Wintergrasp;
             if (sConfigMgr->GetOption<bool>("QuestieBridge.ICC", true))
@@ -374,7 +405,6 @@ public:
             if (sConfigMgr->GetOption<bool>("QuestieBridge.QuestMoney", true))
                 caps |= QuestMoney;
         }
-        _patrolCacheDirty.store(true);
         Capabilities.store(caps);
         Dirty.store(true);
         LOG_INFO("server.loading", "mod-questie-bridge: capability mask {}", caps);
@@ -419,12 +449,7 @@ public:
             return;
         }
         bool const dirty = Dirty.exchange(false);
-        if (_patrolCacheDirty.exchange(false))
-        {
-            _patrolEntries.clear();
-            _patrolCached = false;
-        }
-        _patrolMaps.clear();
+        _mapCreatures.Reset();
         auto const& common = _commonState.Get(now, capabilities, dirty, replyRequested,
             [capabilities]() { return BuildCommonState(capabilities); });
         for (auto const& [player, entry] : active)
@@ -442,33 +467,44 @@ public:
                         rows.push_back("W:" + std::to_string(id) + ':'
                             + std::to_string(sWorldState->getWorldState(id)));
                 std::string playerCaps = common.Caps;
-                if (capabilities & Questgivers)
+                if (capabilities & (Questgivers | QuestgiverTemplates))
                 {
                     uint32 const zone = player->GetZoneId();
-                    std::map<std::pair<uint32, uint32>, bool> observed;
-                    auto const& relations = *sObjectMgr->GetCreatureQuestRelationMap();
-
-                    for (auto const& spawn : player->GetMap()->GetCreatureBySpawnIdStore())
+                    std::vector<std::string> observations;
+                    std::map<std::pair<uint32, uint32>, std::vector<Creature*>> observed;
+                    auto const& store = player->GetMap()->GetCreatureBySpawnIdStore();
+                    for (auto spawnId : GetMapCreatures(player, common).Starters)
                     {
-                        Creature* creature = spawn.second;
-                        if (!creature || !creature->IsInWorld() || !creature->IsAlive()
-                            || creature->GetZoneId() != zone || !player->CanSeeOrDetect(creature)
-                            || creature->IsHostileTo(player)
-                            || relations.find(creature->GetEntry()) == relations.end())
-                            continue;
-
-                        auto const spawnId = creature->GetSpawnId();
-                        if (!spawnId || spawnId > std::numeric_limits<uint32>::max())
-                            continue;
-
-                        auto& active = observed[{creature->GetEntry(), static_cast<uint32>(spawnId)}];
-                        active = active || creature->IsQuestGiver();
+                        auto const range = store.equal_range(spawnId);
+                        for (auto it = range.first; it != range.second; ++it)
+                        {
+                            Creature* creature = it->second;
+                            if (!creature || !common.StarterEntries.contains(creature->GetEntry())
+                                || !creature->IsInWorld() || !creature->IsAlive() || creature->GetZoneId() != zone
+                                || !player->CanSeeOrDetect(creature) || creature->IsHostileTo(player))
+                                continue;
+                            observed[{creature->GetEntry(), spawnId}].push_back(creature);
+                        }
                     }
-
-                    std::vector<std::pair<uint32, uint32>> unavailable;
-                    for (auto const& [identity, active] : observed)
-                        if (!active)
-                            unavailable.push_back(identity);
+                    for (auto const& [identity, creatures] : observed)
+                    {
+                        bool const mixed = std::any_of(creatures.begin(), creatures.end(),
+                            [](Creature* creature) { return creature->IsQuestGiver(); })
+                            && std::any_of(creatures.begin(), creatures.end(),
+                                [](Creature* creature) { return !creature->IsQuestGiver(); });
+                        for (Creature* creature : creatures)
+                        {
+                            bool const active = creature->IsQuestGiver();
+                            if ((!active && (capabilities & Questgivers))
+                                || (active && (common.RestrictedGiverTemplates.contains(identity.first)
+                                    || (mixed && (capabilities & Questgivers)))))
+                                observations.push_back(Acore::StringFormat("G:{}:{}:{}:{:016X}",
+                                    identity.first, identity.second, active ? 1 : 0,
+                                    creature->GetGUID().GetRawValue()));
+                        }
+                        if (observations.size() > 64)
+                            break;
+                    }
 
                     std::size_t const reserved =
                         ((capabilities & Phases) ? PhaseMaxRows : 0)
@@ -478,13 +514,15 @@ public:
                         + ((capabilities & QuestMoney) ? 1 : 0)
                         + (common.ReportResets ? 1 : 0);
 
-                    if (zone && unavailable.size() <= 64 && rows.size() + unavailable.size() + 1 + reserved <= 4096)
+                    if (zone && observations.size() <= 64 && rows.size() + observations.size() + 1 + reserved <= 4096)
                     {
+                        std::sort(observations.begin(), observations.end());
                         playerCaps += (playerCaps.empty() ? "" : ",") + std::string("QUESTGIVERS");
-                        rows.push_back("P:QG_CONTEXT:" + std::to_string(player->GetMapId()) + ':' + std::to_string(zone));
-
-                        for (auto const& [entry, spawnId] : unavailable)
-                            rows.push_back("G:" + std::to_string(entry) + ':' + std::to_string(spawnId));
+                        rows.push_back("P:QG_CONTEXT:" + std::to_string(player->GetMapId())
+                            + ':' + std::to_string(zone));
+                        rows.insert(rows.end(), observations.begin(), observations.end());
+                        // Never apply template restrictions without a complete set of live exceptions.
+                        common.AppendGiverTemplates(rows, playerCaps, reserved);
                     }
                 }
                 if ((capabilities & Phases) && rows.size() + PhaseMaxRows + (common.ReportResets ? 1 : 0) <= 4096)
@@ -538,44 +576,41 @@ public:
                 subscriber.LastSend = now;
             }
             if ((capabilities & Patrols) && subscriber.SnapshotSequence)
-                SendPatrol(player, subscriber);
+                SendPatrol(player, subscriber, common);
         }
     }
 
 private:
-    // Cache relation entries on config reload, and loaded moving spawn identities
-    // once per map/tick. Never retain Creature pointers or force grids to load.
-    void SendPatrol(Player* player, Subscriber& subscriber)
+    QuestieBridge::MapQuestCreatures const& GetMapCreatures(Player* player, QuestieBridge::CommonState const& common)
     {
-        if (!_patrolCached)
+        return _mapCreatures.Get(player->GetMapId(), player->GetInstanceId(), [&]()
         {
-            for (auto const& relation : *sObjectMgr->GetCreatureQuestRelationMap())
-                _patrolEntries.insert(relation.first);
-            for (auto const& relation : *sObjectMgr->GetCreatureQuestInvolvedRelationMap())
-                _patrolEntries.insert(relation.first);
-            _patrolCached = true;
-        }
-        auto const mapKey = std::make_pair(player->GetMapId(), player->GetInstanceId());
-        auto const& store = player->GetMap()->GetCreatureBySpawnIdStore();
-        auto found = _patrolMaps.find(mapKey);
-        if (found == _patrolMaps.end())
-        {
-            std::set<ObjectGuid::LowType> spawns;
-            for (auto const& [spawnId, creature] : store)
+            QuestieBridge::MapQuestCreatures candidates;
+            for (auto const& [spawnId, creature] : player->GetMap()->GetCreatureBySpawnIdStore())
             {
-                if (!_patrolEntries.contains(creature->GetEntry()))
+                if (!creature || !spawnId)
+                    continue;
+                if (common.StarterEntries.contains(creature->GetEntry()))
+                    candidates.Starters.insert(spawnId);
+                if (!common.PatrolEntries.contains(creature->GetEntry()))
                     continue;
                 CreatureData const* data = creature->GetCreatureData();
                 if (creature->GetTransport() || (data && data->movementType != IDLE_MOTION_TYPE)
                     || creature->GetMotionMaster()->GetCurrentMovementGeneratorType() != IDLE_MOTION_TYPE)
-                    spawns.insert(spawnId);
+                    candidates.Patrols.insert(spawnId);
             }
-            found = _patrolMaps.emplace(mapKey, std::move(spawns)).first;
-        }
+            return candidates;
+        });
+    }
+
+    void SendPatrol(Player* player, Subscriber& subscriber, QuestieBridge::CommonState const& common)
+    {
+        auto const mapKey = std::make_pair(player->GetMapId(), player->GetInstanceId());
+        auto const& store = player->GetMap()->GetCreatureBySpawnIdStore();
         std::vector<std::string> rows;
         uint32 const zone = player->GetZoneId();
         bool overflow = false;
-        for (auto const spawnId : found->second)
+        for (auto const spawnId : GetMapCreatures(player, common).Patrols)
         {
             Creature* selected = nullptr;
             bool ambiguous = false;
@@ -584,7 +619,7 @@ private:
             {
                 Creature* creature = it->second;
                 if (!creature->IsInWorld() || !creature->IsAlive() || creature->GetZoneId() != zone
-                    || !_patrolEntries.contains(creature->GetEntry()) || !player->CanSeeOrDetect(creature)
+                    || !common.PatrolEntries.contains(creature->GetEntry()) || !player->CanSeeOrDetect(creature)
                     || creature->IsHostileTo(player))
                     continue;
                 if (selected)
@@ -639,10 +674,7 @@ private:
 
     QuestieBridge::CommonStateCache _commonState;
     uint32 _elapsed = 0;
-    std::atomic<bool> _patrolCacheDirty{true};
-    bool _patrolCached = false;
-    std::set<uint32> _patrolEntries;
-    std::map<std::pair<uint32, uint32>, std::set<ObjectGuid::LowType>> _patrolMaps;
+    QuestieBridge::MapQuestCreatureCache _mapCreatures;
 };
 
 class QuestieBridgeEventScript final : public GameEventScript

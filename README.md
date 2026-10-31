@@ -9,7 +9,8 @@ Install both the module and addon to use these features.
 - Live holidays, fishing tournaments, Scourge Invasion, and Isle of Quel'Danas unlocks.
 - Selected daily/weekly quest pools, ICC weekly quests, and Wintergrasp control.
 - Quests explicitly disabled by the running AzerothCore server.
-- Live NPC questgiver-flag filtering for loaded, visible creatures in the player's zone.
+- Global questgiver-template restrictions on zone, continent, and world maps.
+- Live NPC questgiver-flag filtering and positive overrides in the player's zone.
 - Weekly/monthly quest resets and live XP, reputation, and money rates.
 - Moving questgiver markers in your current zone, including Orgrim's Hammer and the Skybreaker.
 - Phase-dependent locations in supported story areas, including Icecrown, Storm Peaks, and the death knight start.
@@ -47,7 +48,8 @@ All options default to `1` (enabled). Set an option to `0` to disable it, then r
 | `QuestieBridge.Kaluak` | Kalu'ak winner-dependent quests |
 | `QuestieBridge.QuestPools` | Daily/weekly quest pool selections |
 | `QuestieBridge.QuestDisables` | Quests disabled through the loaded DisableMgr |
-| `QuestieBridge.Questgivers` | Live questgiver-flag filtering for observed NPCs |
+| `QuestieBridge.Questgivers` | Negative live questgiver-flag observations |
+| `QuestieBridge.QuestgiverTemplates` | Global template restrictions and required live positive exceptions |
 | `QuestieBridge.Wintergrasp` | Wintergrasp quests and questgiver locations |
 | `QuestieBridge.ICC` | Weekly quests in the player's current ICC instance |
 | `QuestieBridge.Resets` | Weekly/monthly reset timing |
@@ -63,7 +65,7 @@ All options default to `1` (enabled). Set an option to `0` to disable it, then r
 | --- | --- |
 | `/qserver` | Connection, versions, and live state |
 | `/qserver quest <quest ID>` | Whether a quest is explicitly disabled on the server |
-| `/qserver giver <NPC ID>` | Whether a local NPC is observed without questgiver functionality |
+| `/qserver giver <NPC ID>` | Global template restriction and unavailable observed spawn IDs |
 | `/qserver pool <pool ID>` | Selected quests in a pool; for example, `5678` for raid weeklies |
 | `/qserver wintergrasp` | Wintergrasp control and battle state |
 | `/qserver icc` | Weekly quests in your current ICC instance |
@@ -81,10 +83,13 @@ Rate changes through `.reload config` and `.reload reputation_reward_rate` need 
 or corrections regeneration. XP bonuses do not increase the maximum-level money bonus.
 Reward previews can differ from final awards because of server rounding, caps, or custom rules.
 
-Questgiver filtering applies only to observed, loaded, visible NPC spawn IDs in the player's 
-current zone. Missing, unloaded, or unidentified spawns remain unknown. Questie filters only 
-matching starter locations, preserving unrelated spawns, item and gameobject starters, and 
-the quest itself.
+The bridge reports global questgiver-template restrictions across all map zoom levels.
+Live NPC spawn observations take precedence locally, including scripted questgiver
+grants. Unobserved spawns remain unknown.
+
+Restrictions affect NPC queststarter markers and relevant tooltip lines, not quest
+eligibility, objectives, turn-ins, or item/gameobject starters. Missing, expired, or
+oversized server data restores Questie's normal static behavior.
 
 Patrol markers follow loaded, visible NPCs in your current zone; remote maps keep static locations
 and patrol lines. Phase filtering applies within your current subarea. Quest prerequisites,

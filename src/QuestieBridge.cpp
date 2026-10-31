@@ -481,7 +481,8 @@ public:
                             Creature* creature = it->second;
                             if (!creature || !common.StarterEntries.contains(creature->GetEntry())
                                 || !creature->IsInWorld() || !creature->IsAlive() || creature->GetZoneId() != zone
-                                || !player->CanSeeOrDetect(creature) || creature->IsHostileTo(player))
+                                || !QuestieBridge::IsQuestCreatureObservable(player, creature)
+                                || creature->IsHostileTo(player))
                                 continue;
                             observed[{creature->GetEntry(), spawnId}].push_back(creature);
                         }
@@ -619,7 +620,8 @@ private:
             {
                 Creature* creature = it->second;
                 if (!creature->IsInWorld() || !creature->IsAlive() || creature->GetZoneId() != zone
-                    || !common.PatrolEntries.contains(creature->GetEntry()) || !player->CanSeeOrDetect(creature)
+                    || !common.PatrolEntries.contains(creature->GetEntry())
+                    || !QuestieBridge::IsQuestCreatureObservable(player, creature)
                     || creature->IsHostileTo(player))
                     continue;
                 if (selected)

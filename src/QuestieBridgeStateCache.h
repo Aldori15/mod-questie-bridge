@@ -43,6 +43,12 @@ struct CommonState
     bool operator==(CommonState const&) const = default;
 };
 
+template <typename Observer, typename Target>
+bool IsQuestCreatureObservable(Observer const* player, Target const* creature)
+{
+    return player->HaveAtClient(creature) && player->CanSeeOrDetect(creature, false, true);
+}
+
 struct MapQuestCreatures
 {
     std::set<std::uint32_t> Starters;

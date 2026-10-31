@@ -218,6 +218,51 @@ void TestMapCandidates()
     Require(scans == 4, "next tick rebuilds after spawn or movement changes");
 }
 
+void TestObservableCreatures()
+{
+    struct Creature
+    {
+        bool Questgiver = true;
+    } creature;
+    struct Observer
+    {
+        bool AtClient = false;
+        bool InSight = false;
+        bool InPhase = true;
+        bool Detectable = true;
+
+        bool HaveAtClient(Creature const*) const { return AtClient; }
+        bool CanSeeOrDetect(Creature const*, bool ignoreStealth = false, bool distanceCheck = false) const
+        {
+            return InPhase && (ignoreStealth || Detectable) && (!distanceCheck || InSight);
+        }
+    } far, near;
+    Require(creature.Questgiver && far.CanSeeOrDetect(&creature),
+        "a distant loaded questgiver passes the former distance-blind check");
+    Require(!QuestieBridge::IsQuestCreatureObservable(&far, &creature),
+        "distant loaded questgiver cannot supply a positive override or patrol sample");
+    near.AtClient = true;
+    near.InSight = true;
+    Require(QuestieBridge::IsQuestCreatureObservable(&near, &creature),
+        "nearby client-visible questgiver can supply a live override and patrol sample");
+    Require(!QuestieBridge::IsQuestCreatureObservable(&far, &creature),
+        "another player's visibility cannot make the same creature observable");
+    near.InSight = false;
+    Require(!QuestieBridge::IsQuestCreatureObservable(&near, &creature),
+        "leaving sight range invalidates an observation even before client visibility unlinks");
+    far.InSight = true;
+    Require(!QuestieBridge::IsQuestCreatureObservable(&far, &creature),
+        "in-range creature not yet present at the client cannot be reported");
+    near.InSight = true;
+    near.InPhase = false;
+    Require(!QuestieBridge::IsQuestCreatureObservable(&near, &creature),
+        "client membership never bypasses player-specific phasing");
+    near.InPhase = true;
+    near.Detectable = false;
+    Require(!QuestieBridge::IsQuestCreatureObservable(&near, &creature),
+        "client membership never bypasses current detection or ignores stealth");
+}
+
 }
 
 int main()
@@ -231,7 +276,8 @@ int main()
         TestResetAndIdleWork();
         TestQuestgiverCatalog();
         TestMapCandidates();
-        std::cout << "Common state cache: 7 regression groups passed\n";
+        TestObservableCreatures();
+        std::cout << "Common state cache: 8 regression groups passed\n";
         return 0;
     }
     catch (std::exception const& error)

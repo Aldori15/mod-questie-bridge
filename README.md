@@ -85,7 +85,9 @@ Reward previews can differ from final awards because of server rounding, caps, o
 
 The bridge reports global questgiver-template restrictions across all map zoom levels.
 Live NPC spawn observations take precedence locally, including scripted questgiver
-grants. Unobserved spawns remain unknown.
+grants. Questgiver observations and patrol samples require the creature to be present
+at the player's client and pass current distance, phasing, and detection checks.
+Distant loaded creatures do not supply live overrides; their template restrictions still apply.
 
 Restrictions affect NPC queststarter markers and relevant tooltip lines, not quest
 eligibility, objectives, turn-ins, or item/gameobject starters. Missing, expired, or

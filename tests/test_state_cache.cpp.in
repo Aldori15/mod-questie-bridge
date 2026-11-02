@@ -6,6 +6,7 @@
 // The .cpp.in suffix keeps this standalone main out of AC's recursive source collection.
 #include "QuestieBridgeStateCache.h"
 #include "QuestieBridgeProtocol.h"
+#include "QuestieBridgeConditions.h"
 
 #include <iostream>
 #include <stdexcept>
@@ -23,12 +24,158 @@ void Require(bool condition, char const* message)
         throw std::runtime_error(message);
 }
 
+void TestQuestConditions()
+{
+    struct Condition
+    {
+        std::uint32_t ConditionType = 8;
+        std::uint32_t ConditionValue1 = 0;
+        std::uint32_t ConditionValue2 = 0;
+        std::uint32_t ConditionValue3 = 0;
+        std::uint32_t ElseGroup = 0;
+        std::uint32_t ReferenceId = 0;
+        std::uint32_t ScriptId = 0;
+        std::uint32_t ConditionTarget = 0;
+        std::uint32_t SourceGroup = 0;
+        std::int32_t SourceId = 0;
+        bool NegativeCondition = false;
+    } component{8, 8970}, progression{8, 66008}, alliance{8, 108850}, horde{8, 108855, 0, 0, 1};
+    using List = std::vector<Condition const*>;
+    std::map<std::uint32_t, List> lists = {{8985, {&component}}, {11451, {&progression}},
+        {8286, {&alliance, &horde}}, {90000, {&component}}};
+    std::map<std::uint32_t, int> quests = {{8985, 1}, {11451, 1}, {8286, 1}, {90000, 1}};
+    std::map<std::uint32_t, List> references;
+    std::size_t lookups = 0, evaluations = 0;
+    auto conditions = [&](std::uint32_t id) { ++lookups; return lists[id]; };
+    auto refs = [&](std::uint32_t id) { return references[id]; };
+    auto index = QuestieBridge::BuildQuestConditionIndex(quests, conditions, refs);
+    Require(index && index->Quests == 4 && index->Groups.size() == 3, "identical complete expressions share evaluation");
+    auto append = [&](std::set<std::uint32_t> const& rewarded)
+    {
+        std::vector<std::string> rows;
+        std::string caps;
+        QuestieBridge::AppendQuestConditions(*index, [&](std::uint32_t id)
+        {
+            ++evaluations;
+            // This fixture models these loaded quest expressions; production calls Player's API.
+            if (id == 8286)
+                return rewarded.contains(108850) || rewarded.contains(108855);
+            return rewarded.contains(id == 11451 ? 66008 : 8970);
+        }, rows, caps, 0);
+        Require(caps == "QUESTCONDITIONS", "condition restrictions have a separate capability");
+        return rows;
+    };
+    auto const closed = append({8964});
+    Require(closed == std::vector<std::string>{"P:QC_COUNT:4", "C:8286", "C:8985", "C:11451", "C:90000"},
+        "8985 requires 8970 even when the static alternative 8964 is completed");
+    auto const opened = append({8970, 66008, 108855});
+    Require(opened == std::vector<std::string>{"P:QC_COUNT:0"}, "8286 accepts either faction and positive results send no grants");
+    Require(append({108850})[0] == "P:QC_COUNT:3", "8286 preserves OR logic for the other faction");
+    auto const before = evaluations;
+    for (int player = 0; player < 500; ++player)
+        Require(append({8964}) == closed, "unchanged player results have identical snapshot signatures");
+    Require(lookups == 4 && evaluations - before == 1500,
+        "500 subscribers share one discovery scan and evaluate each distinct expression once");
+
+    auto signature = [&](List const& list)
+    {
+        std::size_t nodes = 0;
+        return QuestieBridge::QuestConditionSignature(list, refs, nodes);
+    };
+    Condition reference;
+    reference.ReferenceId = 1;
+    references[1] = {&component, &progression};
+    Require(signature({&reference}).has_value(), "complete safe references are supported");
+    auto const positive = signature({&reference});
+    progression.NegativeCondition = true;
+    Require(signature({&reference}) != positive, "nested predicate negation is retained");
+    progression.NegativeCondition = false;
+    reference.NegativeCondition = true;
+    Require(!signature({&reference}), "negative reference rows are not interpreted differently from AC");
+    reference.NegativeCondition = false;
+    references[1] = {&reference};
+    Require(!signature({&reference}), "cycles are bounded and rejected");
+    references.clear();
+    Require(!signature({&reference}), "missing references remain unknown");
+    Condition unknown{4, 12};
+    for (auto type : {1U, 2U, 4U, 11U, 12U, 13U, 22U, 23U, 26U, 29U})
+    {
+        unknown.ConditionType = type;
+        Require(!signature({&component, &unknown}), "unsafe predicates reject the complete expression");
+    }
+    Condition level{27, 60, 3}, state{47, 6804, 64};
+    Require(signature({&level, &state}).has_value(), "level and quest-state predicates are location independent");
+    level.ConditionValue2 = 5;
+    Require(!signature({&level}), "comparison sentinel is not an executable level predicate");
+    component.ScriptId = 1;
+    Require(!signature({&component}), "scripted conditions remain unknown");
+    component.ScriptId = 0;
+    component.ConditionTarget = 1;
+    Require(!signature({&component}), "non-player targets remain unknown");
+    component.ConditionTarget = 0;
+    Require(!signature(List(QuestieBridge::QuestConditionsMaxNodes + 1, &component)), "expanded node budget is bounded");
+    lists[8985] = {&unknown};
+    auto const reloaded = QuestieBridge::BuildQuestConditionIndex(quests, conditions, refs);
+    Require(reloaded && reloaded->Quests == 3, "reload removes newly contextual expressions from authority");
+    Require(index->Quests == 4, "index owns values rather than core Condition pointers");
+
+    QuestieBridge::QuestConditionIndex maximum;
+    for (std::uint32_t id = 1; id <= QuestieBridge::QuestConditionsMaxQuests; ++id)
+        maximum.Groups["same"].push_back(id);
+    maximum.Quests = QuestieBridge::QuestConditionsMaxQuests;
+    std::vector<std::string> rows;
+    std::string caps;
+    Require(QuestieBridge::AppendQuestConditions(maximum, [](auto) { return false; }, rows, caps, 0),
+        "bounded negative catalog is complete");
+    Require(rows.size() == 513 && QuestieBridge::BuildSnapshotMessages("t", 1, caps, rows).has_value(),
+        "maximum condition catalog fits the existing bounded multipart format");
+    std::size_t sharedEvaluations = 0;
+    auto const started = StateClock::now();
+    for (int player = 0; player < 500; ++player)
+    {
+        std::vector<std::string> sample;
+        std::string sampleCaps;
+        QuestieBridge::AppendQuestConditions(maximum, [&](auto) { ++sharedEvaluations; return false; },
+            sample, sampleCaps, 0);
+        Require(sample == rows, "maximum repeated catalog has a stable snapshot signature");
+    }
+    Require(sharedEvaluations == 500, "512 identical quest expressions cost one evaluation per player");
+    std::cout << "Conditions: 500 players x 512 quests sharing one predicate, " << sharedEvaluations << " evaluations, "
+        << std::chrono::duration_cast<std::chrono::milliseconds>(StateClock::now() - started).count() << " ms\n";
+    rows.assign(4095, "D:1");
+    caps = "QUESTDISABLES";
+    Require(!QuestieBridge::AppendQuestConditions(maximum, [](auto) { return false; }, rows, caps, 1)
+        && rows.size() == 4095 && caps == "QUESTDISABLES", "overflow never advertises a partial condition catalog");
+    quests.clear();
+    for (std::uint32_t id = 1; id <= QuestieBridge::QuestConditionsMaxQuests + 1; ++id)
+    {
+        quests[id] = 1;
+        lists[id] = {&progression};
+    }
+    Require(!QuestieBridge::BuildQuestConditionIndex(quests, conditions, refs), "oversized supported index fails closed");
+    QuestieBridge::QuestConditionIndex distinct;
+    for (std::uint32_t id = 1; id <= QuestieBridge::QuestConditionsMaxQuests; ++id)
+        distinct.Groups[std::to_string(id)] = {id};
+    distinct.Quests = QuestieBridge::QuestConditionsMaxQuests;
+    std::size_t distinctEvaluations = 0;
+    for (int player = 0; player < 500; ++player)
+    {
+        std::vector<std::string> sample;
+        std::string sampleCaps;
+        QuestieBridge::AppendQuestConditions(distinct, [&](auto) { ++distinctEvaluations; return true; },
+            sample, sampleCaps, 0);
+        Require(sample == std::vector<std::string>{"P:QC_COUNT:0"}, "distinct satisfied expressions never send grants");
+    }
+    Require(distinctEvaluations == 500 * QuestieBridge::QuestConditionsMaxQuests,
+        "distinct-expression work stays within the per-player budget");
+}
+
 void TestWireCapabilities()
 {
-    std::array<std::string_view, 18> const names = {{
+    std::array<std::string_view, 19> const names = {{
         "EVENTS", "VALUES", "SCOURGE", "QUELDANAS", "KALUAK", "HEARTBEAT",
         "QUESTPOOLS", "WINTERGRASP", "ICC", "RESETS", "PHASES", "PATROLS",
-        "QUESTXP", "QUESTREP", "QUESTMONEY", "QUESTDISABLES", "QUESTGIVERS", "QUESTGIVERTEMPLATES"
+        "QUESTXP", "QUESTREP", "QUESTMONEY", "QUESTDISABLES", "QUESTGIVERS", "QUESTGIVERTEMPLATES", "QUESTCONDITIONS"
     }};
     std::string all;
     for (std::size_t index = 0; index < names.size(); ++index)
@@ -41,7 +188,7 @@ void TestWireCapabilities()
             all += ',';
         all += names[index];
     }
-    Require(QuestieBridge::EncodeCapabilities(all) == "0003FFFF", "all wire capabilities fit one word");
+    Require(QuestieBridge::EncodeCapabilities(all) == "0007FFFF", "all wire capabilities fit one word");
     Require(QuestieBridge::EncodeCapabilities("HEARTBEAT,EVENTS") == "00000021", "name order is irrelevant");
     Require(QuestieBridge::EncodeCapabilities("") == "00000000", "empty capability set has one zero word");
     for (auto invalid : {"UNKNOWN", "EVENTS,EVENTS", ",EVENTS", "EVENTS,", "EVENTS,,HEARTBEAT"})
@@ -68,17 +215,17 @@ void TestSnapshotEncoding()
     }
     auto const full = BuildSnapshotMessages(token, sequence, all, std::vector<std::string>(4096, std::string(36, 'x')));
     Require(full && full->size() == 1026, "maximum rows and parts form one complete batch");
-    Require(full->front() == "BEGIN~19~" + token + "~9007199254740991~0003FFFF~4096~1024",
+    Require(full->front() == "BEGIN~20~" + token + "~9007199254740991~0007FFFF~4096~1024",
         "maximum BEGIN uses compact capabilities");
     Require(full->front().size() == 77, "maximum current BEGIN leaves 163 bytes of headroom");
-    Require(full->back() == "END~19~" + token + "~9007199254740991", "END retains the snapshot anchor");
+    Require(full->back() == "END~20~" + token + "~9007199254740991", "END retains the snapshot anchor");
     for (auto const& message : *full)
         Require(message.size() <= 240, "every serialized message obeys the payload limit");
     auto const empty = BuildSnapshotMessages("t", 1, "", {});
-    Require(empty && *empty == std::vector<std::string>{"BEGIN~19~t~1~00000000~0~0", "END~19~t~1"},
+    Require(empty && *empty == std::vector<std::string>{"BEGIN~20~t~1~00000000~0~0", "END~20~t~1"},
         "empty snapshots remain complete and atomic");
     auto const packed = BuildSnapshotMessages("t", 2, "EVENTS,HEARTBEAT", {"E:1:0:0:1", "E:2:0:0:0"});
-    Require(packed && (*packed)[1] == "PART~19~t~2~1~E:1:0:0:1;E:2:0:0:0", "multipart row encoding is unchanged");
+    Require(packed && (*packed)[1] == "PART~20~t~2~1~E:1:0:0:1;E:2:0:0:0", "multipart row encoding is unchanged");
     Require(BuildSnapshotMessages(token, sequence, "HEARTBEAT", {std::string(150, 'x')}).has_value(),
         "maximum part body fits with the longest token and sequence");
     Require(!BuildSnapshotMessages(token, sequence, "HEARTBEAT", {std::string(151, 'x')}),
@@ -352,7 +499,8 @@ int main()
         TestObservableCreatures();
         TestWireCapabilities();
         TestSnapshotEncoding();
-        std::cout << "Common state cache and protocol: 10 regression groups passed\n";
+        TestQuestConditions();
+        std::cout << "Common state cache, conditions and protocol: 11 regression groups passed\n";
         return 0;
     }
     catch (std::exception const& error)

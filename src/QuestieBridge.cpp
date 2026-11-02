@@ -5,6 +5,7 @@
 
 #include "Chat.h"
 #include "Config.h"
+#include "ConditionMgr.h"
 #include "Creature.h"
 #include "DisableMgr.h"
 #include "GameEventMgr.h"
@@ -31,6 +32,7 @@
 #include "QuestieBridgeMoney.h"
 #include "QuestieBridgeStateCache.h"
 #include "QuestieBridgeProtocol.h"
+#include "QuestieBridgeConditions.h"
 
 #include <algorithm>
 #include <atomic>
@@ -67,6 +69,7 @@ constexpr uint32 QuestMoney = 4096;
 constexpr uint32 QuestDisables = 8192;
 constexpr uint32 Questgivers = 16384;
 constexpr uint32 QuestgiverTemplates = 32768;
+constexpr uint32 QuestConditions = 65536;
 constexpr std::size_t PhaseMaxRows = QuestieBridge::PhaseMaxRows;
 std::atomic<uint32> Capabilities{Events | Values | Progress | Kaluak | QuestPools | Wintergrasp | ICC
     | Resets | Phases | Patrols | QuestXP | QuestReputation | QuestMoney
@@ -374,6 +377,8 @@ public:
                 caps |= Questgivers;
             if (sConfigMgr->GetOption<bool>("QuestieBridge.QuestgiverTemplates", true))
                 caps |= QuestgiverTemplates;
+            if (sConfigMgr->GetOption<bool>("QuestieBridge.QuestConditions", false))
+                caps |= QuestConditions;
             if (sConfigMgr->GetOption<bool>("QuestieBridge.Wintergrasp", true))
                 caps |= Wintergrasp;
             if (sConfigMgr->GetOption<bool>("QuestieBridge.ICC", true))
@@ -438,6 +443,8 @@ public:
         _mapCreatures.Reset();
         auto const& common = _commonState.Get(now, capabilities, dirty, replyRequested,
             [capabilities]() { return BuildCommonState(capabilities); });
+        std::optional<QuestieBridge::QuestConditionIndex> conditions;
+        bool conditionsBuilt = false;
         for (auto const& [player, entry] : active)
         {
             Subscriber& subscriber = *entry;
@@ -535,6 +542,26 @@ public:
                 if ((capabilities & QuestMoney) && rows.size() + 1 + (common.ReportResets ? 1 : 0) <= 4096
                     && QuestieBridge::AppendQuestMoney(rows))
                     playerCaps += (playerCaps.empty() ? "" : ",") + std::string("QUESTMONEY");
+                if (capabilities & QuestConditions)
+                {
+                    // Shared for this tick; never reuse classification across a condition reload.
+                    if (!conditionsBuilt)
+                    {
+                        conditionsBuilt = true;
+                        conditions = QuestieBridge::BuildQuestConditionIndex(sObjectMgr->GetQuestTemplates(),
+                            [](uint32 id)
+                            {
+                                return sConditionMgr->GetConditionsForNotGroupedEntry(
+                                    CONDITION_SOURCE_TYPE_QUEST_AVAILABLE, id);
+                            }, [](uint32 id) { return sConditionMgr->GetConditionReferences(id); });
+                    }
+                    if (conditions)
+                        QuestieBridge::AppendQuestConditions(*conditions, [player](uint32 id)
+                        {
+                            Quest const* quest = sObjectMgr->GetQuestTemplate(id);
+                            return !quest || player->SatisfyQuestConditions(quest, false);
+                        }, rows, playerCaps, common.ReportResets ? 1 : 0);
+                }
                 std::string signature = playerCaps;
                 for (std::string const& row : rows)
                     signature += ';' + row;

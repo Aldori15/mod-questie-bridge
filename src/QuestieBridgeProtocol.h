@@ -16,7 +16,7 @@
 
 namespace QuestieBridge
 {
-constexpr std::uint32_t ProtocolVersion = 19;
+constexpr std::uint32_t ProtocolVersion = 20;
 using CapabilityMask = std::array<std::uint32_t, 4>;
 
 struct WireCapability
@@ -26,12 +26,12 @@ struct WireCapability
 };
 
 // Permanent wire assignments; these are not configuration flags.
-constexpr std::array<WireCapability, 18> WireCapabilities = {{
+constexpr std::array<WireCapability, 19> WireCapabilities = {{
     {"EVENTS", 0}, {"VALUES", 1}, {"SCOURGE", 2}, {"QUELDANAS", 3},
     {"KALUAK", 4}, {"HEARTBEAT", 5}, {"QUESTPOOLS", 6}, {"WINTERGRASP", 7},
     {"ICC", 8}, {"RESETS", 9}, {"PHASES", 10}, {"PATROLS", 11},
     {"QUESTXP", 12}, {"QUESTREP", 13}, {"QUESTMONEY", 14},
-    {"QUESTDISABLES", 15}, {"QUESTGIVERS", 16}, {"QUESTGIVERTEMPLATES", 17}
+    {"QUESTDISABLES", 15}, {"QUESTGIVERS", 16}, {"QUESTGIVERTEMPLATES", 17}, {"QUESTCONDITIONS", 18}
 }};
 
 inline std::string EncodeCapabilityMask(CapabilityMask const& words)

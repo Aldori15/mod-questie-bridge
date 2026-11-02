@@ -38,6 +38,10 @@ QuestieBridge.Questgivers = 1
 # Live positive exceptions remain enabled even when Questgivers is disabled.
 QuestieBridge.QuestgiverTemplates = 1
 
+# Experimental player-specific quest restrictions. Opt-in; disabled by default.
+# Validate public-server performance before enabling.
+QuestieBridge.QuestConditions = 0
+
 # Report Wintergrasp control/battle state and scripted attacker/defender quest gates.
 # Includes the eight attacking variants that inherit a defending pool selection.
 QuestieBridge.Wintergrasp = 1

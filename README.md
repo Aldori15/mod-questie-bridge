@@ -9,6 +9,7 @@ Install both the module and addon to use these features.
 - Live holidays, fishing tournaments, Scourge Invasion, and Isle of Quel'Danas unlocks.
 - Selected daily/weekly quest pools, ICC weekly quests, and Wintergrasp control.
 - Quests explicitly disabled by the running AzerothCore server.
+- Opt-in player-specific quest availability conditions for customized servers.
 - Global questgiver-template restrictions on zone, continent, and world maps.
 - Live NPC questgiver-flag filtering and positive overrides in the player's zone.
 - Weekly/monthly quest resets and live XP, reputation, and money rates.
@@ -37,7 +38,8 @@ No SQL installation is required. Enable **Available Scourge Invasion Quests** or
 
 ## Configuration
 
-All options default to `1` (enabled). Set an option to `0` to disable it, then run `.reload config`.
+Options default to `1` (enabled), except experimental `QuestConditions`, which defaults to `0`.
+Set an option to `0` to disable it, then run `.reload config`.
 
 | Option | Controls |
 | --- | --- |
@@ -48,6 +50,7 @@ All options default to `1` (enabled). Set an option to `0` to disable it, then r
 | `QuestieBridge.Kaluak` | Kalu'ak winner-dependent quests |
 | `QuestieBridge.QuestPools` | Daily/weekly quest pool selections |
 | `QuestieBridge.QuestDisables` | Quests disabled through the loaded DisableMgr |
+| `QuestieBridge.QuestConditions` | Experimental player-specific condition restrictions (opt-in) |
 | `QuestieBridge.Questgivers` | Negative live questgiver-flag observations |
 | `QuestieBridge.QuestgiverTemplates` | Global template restrictions and required live positive exceptions |
 | `QuestieBridge.Wintergrasp` | Wintergrasp quests and questgiver locations |
@@ -65,6 +68,7 @@ All options default to `1` (enabled). Set an option to `0` to disable it, then r
 | --- | --- |
 | `/qserver` | Connection, versions, and live state |
 | `/qserver quest <quest ID>` | Whether a quest is explicitly disabled on the server |
+| `/qserver conditions` | Player-specific condition restrictions, when enabled |
 | `/qserver giver <NPC ID>` | Global template restriction and unavailable observed spawn IDs |
 | `/qserver pool <pool ID>` | Selected quests in a pool; for example, `5678` for raid weeklies |
 | `/qserver wintergrasp` | Wintergrasp control and battle state |
@@ -89,7 +93,7 @@ grants. Questgiver observations and patrol samples require the creature to be pr
 at the player's client and pass current distance, phasing, and detection checks.
 Distant loaded creatures do not supply live overrides; their template restrictions still apply.
 
-Restrictions affect NPC queststarter markers and relevant tooltip lines, not quest
+Questgiver restrictions affect NPC queststarter markers and relevant tooltip lines, not quest
 eligibility, objectives, turn-ins, or item/gameobject starters. Missing, expired, or
 oversized server data restores Questie's normal static behavior.
 
@@ -102,20 +106,32 @@ quest rewards, requirements, or reset schedules, and players without the addon c
 Entirely new custom quests still need addon data. For a protocol mismatch, install matching builds.
 Include `/qserver` output when [reporting an issue](https://github.com/Aldori15/mod-questie-bridge/issues).
 
+## Experimental quest conditions
+
+Reports player-specific restrictions for rewarded quest (8), level (27), and quest state (47)
+conditions, including complete AND/OR expressions, safe references, and predicate negation.
+Restrictions only hide available starters; accepted quests, objectives, and turn-ins are unaffected.
+Unsupported expressions or missing, expired, incomplete, or oversized data keep Questie's normal fallback.
+
+**Disabled by default pending public-server performance validation.** To opt in, set
+`QuestieBridge.QuestConditions = 1` and run `.reload config`.
+
 ## Protocol
 
-Protocol **19** requires a matching addon. `INFO~1` remains the independent version
+Protocol **20** requires a matching addon. `INFO~1` remains the independent version
 diagnostic handshake; a mismatch restores static addon behavior without downgrading.
 
 Snapshots retain `BEGIN` / `PART` / `END`, with compact capabilities in the same field:
 
 ```text
-BEGIN~19~token~sequence~mask~rowCount~partCount
+BEGIN~20~token~sequence~mask~rowCount~partCount
+PART~20~token~sequence~partIndex~row;row;...
+END~20~token~sequence
 ```
 
 The mask contains one to four uppercase, eight-digit hexadecimal 32-bit words,
 lowest capability range first, separated by `.`. Trailing zero words are omitted;
-the empty mask is `00000000`. All current capabilities together are `0003FFFF`.
+the empty mask is `00000000`. All current capabilities together are `0007FFFF`.
 These permanent wire bits are independent of the internal configuration flags:
 
 | Bit | Capability | Bit | Capability |
@@ -129,9 +145,24 @@ These permanent wire bits are independent of the internal configuration flags:
 | 6 | QUESTPOOLS | 15 | QUESTDISABLES |
 | 7 | WINTERGRASP | 16 | QUESTGIVERS |
 | 8 | ICC | 17 | QUESTGIVERTEMPLATES |
+| | | 18 | QUESTCONDITIONS |
 
-Bits 18–127 are unassigned and rejected when set. Each word is decoded separately to
+Bits 19–127 are unassigned and rejected when set. Each word is decoded separately to
 preserve Lua 5.1 numeric precision.
+
+Messages use addon prefix `QSTSVR` and a maximum 240-byte payload. Snapshot row data is packed
+into parts of at most 150 bytes, with at most 4,096 rows and 1,024 parts per snapshot.
+Tokens are 1–32 alphanumeric characters; sequences are positive integers up to `9007199254740991`.
+The client validates tokens, sequences, counts, and every row before atomic replacement; incomplete
+batches are discarded after five seconds. State expires after 30 seconds without a valid snapshot or heartbeat.
+
+`QUESTCONDITIONS` requires exactly one `P:QC_COUNT:<count>` row plus that many unique
+`C:<questId>` rows, limited to 512 quests. These are negative restrictions only; a zero count grants nothing.
+Catalog overflow or insufficient snapshot space omits the capability rather than sending a partial catalog.
+
+Heartbeats (`ALIVE~20~token~sequence~snapshotSequence`) renew only an already fresh, complete snapshot.
+Patrol batches are sequenced separately; samples expire after five seconds and never renew quest-state freshness.
+`INFO~1` diagnoses versions without establishing or renewing availability state.
 
 ## License
 

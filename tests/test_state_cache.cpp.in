@@ -9,6 +9,7 @@
 #include "QuestieBridgeConditions.h"
 
 #include <iostream>
+#include <map>
 #include <stdexcept>
 
 namespace
@@ -215,17 +216,22 @@ void TestSnapshotEncoding()
     }
     auto const full = BuildSnapshotMessages(token, sequence, all, std::vector<std::string>(4096, std::string(36, 'x')));
     Require(full && full->size() == 1026, "maximum rows and parts form one complete batch");
-    Require(full->front() == "BEGIN~20~" + token + "~9007199254740991~0007FFFF~4096~1024",
-        "maximum BEGIN uses compact capabilities");
-    Require(full->front().size() == 77, "maximum current BEGIN leaves 163 bytes of headroom");
-    Require(full->back() == "END~20~" + token + "~9007199254740991", "END retains the snapshot anchor");
+    std::string const emptyCatalogId(64, '0');
+    Require(full->front() == "BEGIN~21~" + token + "~9007199254740991~0007FFFF~4096~1024~" + emptyCatalogId + "~0",
+        "maximum BEGIN carries compact capabilities and catalog metadata");
+    Require(full->front().size() == 144, "maximum current BEGIN leaves 96 bytes of headroom");
+    std::string const futureBegin = "BEGIN~21~" + token + "~9007199254740991~"
+        + QuestieBridge::EncodeCapabilityMask({0xFFFFFFFFU, 0xFFFFFFFFU, 0xFFFFFFFFU, 0xFFFFFFFFU})
+        + "~4096~1024~" + emptyCatalogId + "~0";
+    Require(futureBegin.size() == 171, "future four-word capability mask still fits the payload limit");
+    Require(full->back() == "END~21~" + token + "~9007199254740991", "END retains the snapshot anchor");
     for (auto const& message : *full)
         Require(message.size() <= 240, "every serialized message obeys the payload limit");
     auto const empty = BuildSnapshotMessages("t", 1, "", {});
-    Require(empty && *empty == std::vector<std::string>{"BEGIN~20~t~1~00000000~0~0", "END~20~t~1"},
+    Require(empty && *empty == std::vector<std::string>{"BEGIN~21~t~1~00000000~0~0~" + emptyCatalogId + "~0", "END~21~t~1"},
         "empty snapshots remain complete and atomic");
     auto const packed = BuildSnapshotMessages("t", 2, "EVENTS,HEARTBEAT", {"E:1:0:0:1", "E:2:0:0:0"});
-    Require(packed && (*packed)[1] == "PART~20~t~2~1~E:1:0:0:1;E:2:0:0:0", "multipart row encoding is unchanged");
+    Require(packed && (*packed)[1] == "PART~21~t~2~1~E:1:0:0:1;E:2:0:0:0", "multipart row encoding is unchanged");
     Require(BuildSnapshotMessages(token, sequence, "HEARTBEAT", {std::string(150, 'x')}).has_value(),
         "maximum part body fits with the longest token and sequence");
     Require(!BuildSnapshotMessages(token, sequence, "HEARTBEAT", {std::string(151, 'x')}),
@@ -237,9 +243,134 @@ void TestSnapshotEncoding()
     Require(!BuildSnapshotMessages(token, sequence, "HEARTBEAT", {""}), "empty rows are rejected");
     Require(!BuildSnapshotMessages(token, sequence, "UNKNOWN", {}), "unknown capabilities cannot be advertised");
     Require(!BuildSnapshotMessages(token + 'T', sequence, "HEARTBEAT", {}), "oversized tokens are rejected");
+    Require(!BuildSnapshotMessages("", sequence, "HEARTBEAT", {}), "empty tokens are rejected");
     Require(!BuildSnapshotMessages("bad~token", sequence, "HEARTBEAT", {}), "invalid tokens are rejected");
     Require(!BuildSnapshotMessages(token, 0, "HEARTBEAT", {}), "zero sequence is rejected");
     Require(!BuildSnapshotMessages(token, sequence + 1, "HEARTBEAT", {}), "inexact Lua sequences are rejected");
+}
+
+std::vector<std::string> BeginFields(std::vector<std::string> const& messages)
+{
+    std::vector<std::string> fields;
+    std::string_view remaining = messages.front();
+    for (;;)
+    {
+        auto const separator = remaining.find('~');
+        fields.emplace_back(remaining.substr(0, separator));
+        if (separator == std::string_view::npos)
+            return fields;
+        remaining.remove_prefix(separator + 1);
+    }
+}
+
+void TestSnapshotCatalogs()
+{
+    using QuestieBridge::BuildSnapshotCatalog;
+    using QuestieBridge::BuildSnapshotMessages;
+    std::string const id(64, 'A');
+    auto const catalog = BuildSnapshotCatalog(id, {"E:1:0:0:1", "Q:13830:5676:1"});
+    Require(catalog && catalog->RowCount == 2 && catalog->Parts.size() == 1, "shared rows pack once into an owned catalog");
+    auto const full = BuildSnapshotMessages("t", 1, "EVENTS,QUESTPOOLS", {"P:LOCAL:1"}, *catalog);
+    auto const reference = BuildSnapshotMessages("t", 2, "EVENTS,QUESTPOOLS", {"P:LOCAL:1"}, *catalog, true);
+    Require(full && reference, "full and reference snapshots serialize through production helpers");
+    auto const fullFields = BeginFields(*full);
+    auto const refFields = BeginFields(*reference);
+    Require(fullFields.size() == 9 && refFields.size() == 9, "protocol 21 BEGIN has nine fields");
+    Require(fullFields[5] == "3" && fullFields[6] == "2" && fullFields[7] == id && fullFields[8] == "2",
+        "full BEGIN reports transmitted rows, parts, identity and shared prefix length");
+    Require(refFields[5] == "1" && refFields[6] == "1" && refFields[7] == id && refFields[8] == "R",
+        "reference BEGIN reports only private transmission and names the catalog");
+    Require(std::stoull(fullFields[5]) == std::stoull(refFields[5]) + catalog->RowCount,
+        "full and reference batches resolve to the same effective row count");
+    Require((*full)[1] == "PART~21~t~1~1~E:1:0:0:1;Q:13830:5676:1"
+        && (*full)[2] == "PART~21~t~1~2~P:LOCAL:1" && (*reference)[1] == "PART~21~t~2~1~P:LOCAL:1",
+        "full batches send shared prefix first and references omit it");
+    auto const noLocal = BuildSnapshotMessages("t", 3, "EVENTS", {}, *catalog, true);
+    Require(noLocal && noLocal->size() == 2 && BeginFields(*noLocal)[5] == "0"
+        && BeginFields(*noLocal)[6] == "0", "reference-only snapshots allow zero local rows and zero parts");
+    auto const sharedOnly = BuildSnapshotMessages("t", 4, "EVENTS", {}, *catalog);
+    Require(sharedOnly && sharedOnly->size() == 3 && BeginFields(*sharedOnly)[5] == "2",
+        "full catalog with zero local rows still transmits the shared prefix");
+    auto const maximum = BuildSnapshotCatalog(id, std::vector<std::string>(4096, "D:1"));
+    Require(maximum && BuildSnapshotMessages("t", 5, "QUESTDISABLES", {}, *maximum).has_value()
+        && BuildSnapshotMessages("t", 6, "QUESTDISABLES", {}, *maximum, true).has_value(),
+        "4096 logical shared rows fit both forms");
+    Require(!BuildSnapshotMessages("t", 7, "QUESTDISABLES", {"P:LOCAL:1"}, *maximum)
+        && !BuildSnapshotMessages("t", 8, "QUESTDISABLES", {"P:LOCAL:1"}, *maximum, true),
+        "4096 logical row bound includes referenced rows");
+    Require(!BuildSnapshotCatalog(id, std::vector<std::string>(4097, "D:1")), "oversized catalog rows fail closed");
+    Require(!BuildSnapshotCatalog(id, std::vector<std::string>(1025, std::string(150, 'x'))),
+        "oversized catalog parts fail closed");
+    Require(!BuildSnapshotCatalog(id, {""}) && !BuildSnapshotCatalog(id, {std::string(151, 'x')}),
+        "catalog packing enforces the same row boundaries as local packing");
+    for (auto const& invalid : std::vector<std::string>{"", std::string(63, 'A'), std::string(65, 'A'),
+        std::string(64, 'a'), std::string(64, 'G')})
+    {
+        Require(!BuildSnapshotCatalog(invalid, {}), "catalog identity requires exactly 64 uppercase hexadecimal characters");
+        auto malformed = *catalog;
+        malformed.Id = invalid;
+        Require(!BuildSnapshotMessages("t", 1, "EVENTS", {}, malformed)
+            && !BuildSnapshotMessages("t", 1, "EVENTS", {}, malformed, true), "malformed catalog identity fails in both batch forms");
+    }
+    auto oversized = *catalog;
+    oversized.RowCount = 4097;
+    Require(!BuildSnapshotMessages("t", 1, "EVENTS", {}, oversized, true), "reference cannot bypass catalog row bounds");
+    auto const manyParts = BuildSnapshotCatalog(id, std::vector<std::string>(512, std::string(150, 'x')));
+    Require(manyParts.has_value(), "512 shared parts are individually valid");
+    Require(BuildSnapshotMessages("t", 1, "EVENTS", std::vector<std::string>(512, std::string(150, 'y')), *manyParts).has_value(),
+        "exact combined part boundary is accepted");
+    Require(!BuildSnapshotMessages("t", 1, "EVENTS", std::vector<std::string>(513, std::string(150, 'y')), *manyParts),
+        "combined shared and private parts cannot exceed 1024");
+    Require(BuildSnapshotMessages("t", 1, "EVENTS", std::vector<std::string>(513, std::string(150, 'y')), *manyParts, true).has_value(),
+        "reference part count excludes shared bodies while retaining logical row bounds");
+}
+
+void TestCatalogWireReduction()
+{
+    std::vector<std::string> shared;
+    for (int id = 1; id <= 182; ++id)
+        shared.push_back("E:" + std::to_string(id) + ":0:0:1");
+    for (int id = 1; id <= 159; ++id)
+        shared.push_back("Q:" + std::to_string(10000 + id) + ":5676:1");
+    for (int id = 1; id <= 718; ++id)
+        shared.push_back("D:" + std::to_string(20000 + id));
+    std::vector<std::string> local;
+    for (int id = 1; id <= 10; ++id)
+        local.push_back("W:" + std::to_string(id) + ":1");
+    auto const catalog = QuestieBridge::BuildSnapshotCatalog(std::string(64, 'B'), shared);
+    Require(catalog && catalog->RowCount == 1059, "representative catalog has 182 events, 159 pool rows and 718 disables");
+    auto const full = QuestieBridge::BuildSnapshotMessages("representative", 1, "EVENTS,QUESTPOOLS,QUESTDISABLES,VALUES", local, *catalog);
+    auto const reference = QuestieBridge::BuildSnapshotMessages("representative", 2, "EVENTS,QUESTPOOLS,QUESTDISABLES,VALUES", local, *catalog, true);
+    Require(full && reference, "representative production batches serialize");
+    auto bytes = [](std::vector<std::string> const& messages)
+    {
+        std::size_t total = 0;
+        for (auto const& message : messages)
+            total += message.size();
+        return total;
+    };
+    Require(reference->size() * 10 < full->size() && bytes(*reference) * 10 < bytes(*full),
+        "representative references reduce messages and payload bytes by over 90 percent");
+    std::cout << "Representative wire (1059 shared, 10 private): full " << full->size() << " messages/" << bytes(*full)
+        << " bytes; reference " << reference->size() << " messages/" << bytes(*reference) << " bytes\n";
+    for (std::size_t players : {10U, 50U, 100U, 500U})
+    {
+        std::size_t oldCopies = 0, oldSignatureRows = 0, revisionChecks = 0, newSignatureRows = 0;
+        for (std::size_t player = 0; player < players; ++player)
+        {
+            // Synthetic operation counts only, not a server timing benchmark.
+            oldCopies += shared.size();
+            oldSignatureRows += shared.size() + local.size();
+            ++revisionChecks;
+            newSignatureRows += local.size();
+        }
+        Require(oldCopies == players * 1059 && oldSignatureRows == players * 1069
+            && revisionChecks == players && newSignatureRows == players * 10,
+            "synthetic idle-check counts depend on shared revision and private rows only");
+        std::cout << "Synthetic idle checks (" << players << " players): old shared row copies=" << oldCopies
+            << ", old signature rows=" << oldSignatureRows << "; new revision checks=" << revisionChecks
+            << ", new private signature rows=" << newSignatureRows << '\n';
+    }
 }
 
 void TestRefreshAndOwnership()
@@ -414,28 +545,107 @@ void TestQuestgiverCatalog()
         "unavailable catalog is distinct from an empty complete catalog");
 }
 
-void TestMapCandidates()
+struct VisibleFixtureCreature
 {
-    QuestieBridge::MapQuestCreatureCache cache;
-    int scans = 0;
-    auto build = [&]()
+    std::uint32_t Entry = 823;
+    std::uint32_t Spawn = 111;
+    int Map = 1;
+    int Zone = 2;
+    bool InWorld = true;
+    bool Alive = true;
+    bool AtClient = true;
+    bool InSight = true;
+    bool InPhase = true;
+    bool Detectable = true;
+    bool Hostile = false;
+
+    std::uint32_t GetSpawnId() const { return Spawn; }
+    std::uint32_t GetEntry() const { return Entry; }
+    int GetMap() const { return Map; }
+    int GetZoneId() const { return Zone; }
+    bool IsInWorld() const { return InWorld; }
+    bool IsAlive() const { return Alive; }
+    bool IsHostileTo(void const*) const { return Hostile; }
+};
+
+struct VisibleFixtureObject
+{
+    VisibleFixtureCreature* Creature = nullptr;
+    VisibleFixtureCreature* ToCreature() const { return Creature; }
+};
+
+struct VisibleFixtureObserver
+{
+    int Map = 1;
+    int Zone = 2;
+    bool CanDetect = true;
+    std::size_t Iterations = 0;
+    std::size_t Visits = 0;
+    std::vector<VisibleFixtureObject> Visible;
+
+    int GetMap() const { return Map; }
+    int GetZoneId() const { return Zone; }
+    bool HaveAtClient(VisibleFixtureCreature const* creature) const { return creature->AtClient; }
+    bool CanSeeOrDetect(VisibleFixtureCreature const* creature, bool ignoreStealth, bool distanceCheck) const
     {
-        ++scans;
-        return QuestieBridge::MapQuestCreatures{{111, 222}, {222}};
-    };
-    for (int player = 0; player < 1000; ++player)
-    {
-        auto const& candidates = cache.Get(571, 1, build);
-        Require(candidates.Starters.contains(111) && candidates.Patrols.contains(222),
-            "both samplers share candidates");
+        return CanDetect && creature->InPhase && (ignoreStealth || creature->Detectable)
+            && (!distanceCheck || creature->InSight);
     }
-    Require(scans == 1, "1000 subscribers scan the map store only once per tick");
-    cache.Get(571, 2, build);
-    cache.Get(0, 1, build);
-    Require(scans == 3, "map and instance identities never share candidates");
-    cache.Reset();
-    cache.Get(571, 1, build);
-    Require(scans == 4, "next tick rebuilds after spawn or movement changes");
+
+    template <typename Visitor>
+    void DoForAllVisibleWorldObjects(Visitor&& visitor)
+    {
+        ++Iterations;
+        for (auto& object : Visible)
+        {
+            ++Visits;
+            visitor(&object);
+        }
+    }
+};
+
+void TestVisibleCandidates()
+{
+    VisibleFixtureCreature valid, sameSpawnVariant;
+    VisibleFixtureObserver player;
+    player.Visible = {{nullptr}, {&valid}, {&sameSpawnVariant}};
+    auto const initial = QuestieBridge::CollectObservableQuestCreatures<VisibleFixtureCreature>(&player, {823});
+    Require(initial == std::vector<VisibleFixtureCreature*>{&valid, &sameSpawnVariant},
+        "visible stationary creatures and distinct same-spawn variants remain candidates");
+    Require(player.Iterations == 1 && player.Visits == 3, "collector visits only the player's visible object list once");
+
+    for (int exclusion = 0; exclusion < 11; ++exclusion)
+    {
+        auto rejected = valid;
+        switch (exclusion)
+        {
+            case 0: rejected.Spawn = 0; break;
+            case 1: rejected.Map = 3; break;
+            case 2: rejected.Zone = 3; break;
+            case 3: rejected.InWorld = false; break;
+            case 4: rejected.Alive = false; break;
+            case 5: rejected.AtClient = false; break;
+            case 6: rejected.InSight = false; break;
+            case 7: rejected.InPhase = false; break;
+            case 8: rejected.Detectable = false; break;
+            case 9: rejected.Hostile = true; break;
+            case 10: rejected.Entry = 824; break;
+        }
+        player.Visible = {{&rejected}};
+        Require(QuestieBridge::CollectObservableQuestCreatures<VisibleFixtureCreature>(&player, {823}).empty(),
+            "spawn identity, map, zone, life, client, distance, phase, detection and hostility remain mandatory");
+    }
+    player.Visible = {{&valid}};
+    VisibleFixtureObserver other;
+    other.Visible = {{&valid}};
+    other.CanDetect = false;
+    Require(QuestieBridge::CollectObservableQuestCreatures<VisibleFixtureCreature>(&player, {823}).size() == 1
+        && QuestieBridge::CollectObservableQuestCreatures<VisibleFixtureCreature>(&other, {823}).empty(),
+        "the same visible creature is sampled independently for each observer");
+    player.Visible.clear();
+    Require(QuestieBridge::CollectObservableQuestCreatures<VisibleFixtureCreature>(&player, {823}).empty(),
+        "next collection cannot reuse pointers from a prior tick");
+    Require(initial.size() == 2, "each returned vector owns its entries independently of the observer list");
 }
 
 void TestObservableCreatures()
@@ -495,12 +705,14 @@ int main()
         TestPlayerChecks();
         TestResetAndIdleWork();
         TestQuestgiverCatalog();
-        TestMapCandidates();
+        TestVisibleCandidates();
         TestObservableCreatures();
         TestWireCapabilities();
         TestSnapshotEncoding();
+        TestSnapshotCatalogs();
+        TestCatalogWireReduction();
         TestQuestConditions();
-        std::cout << "Common state cache, conditions and protocol: 11 regression groups passed\n";
+        std::cout << "Common state cache, conditions and protocol: 13 regression groups passed\n";
         return 0;
     }
     catch (std::exception const& error)

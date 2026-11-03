@@ -16,7 +16,7 @@
 
 namespace QuestieBridge
 {
-constexpr std::uint32_t ProtocolVersion = 20;
+constexpr std::uint32_t ProtocolVersion = 21;
 using CapabilityMask = std::array<std::uint32_t, 4>;
 
 struct WireCapability
@@ -81,14 +81,9 @@ inline std::optional<std::string> EncodeCapabilities(std::string_view names)
     return EncodeCapabilityMask(words);
 }
 
-inline std::optional<std::vector<std::string>> BuildSnapshotMessages(std::string const& token,
-    std::uint64_t sequence, std::string_view names, std::vector<std::string> const& rows)
+inline std::optional<std::vector<std::string>> PackSnapshotRows(std::vector<std::string> const& rows)
 {
-    auto const caps = EncodeCapabilities(names);
-    constexpr char tokenCharacters[] = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789";
-    if (!caps || token.empty() || token.size() > 32
-        || token.find_first_not_of(tokenCharacters) != std::string::npos
-        || !sequence || sequence > 9007199254740991ULL || rows.size() > 4096)
+    if (rows.size() > 4096)
         return std::nullopt;
     std::vector<std::string> parts;
     std::string part;
@@ -109,12 +104,57 @@ inline std::optional<std::vector<std::string>> BuildSnapshotMessages(std::string
         parts.push_back(std::move(part));
     if (parts.size() > 1024)
         return std::nullopt;
+    return parts;
+}
+
+struct SnapshotCatalog
+{
+    std::string Id = std::string(64, '0');
+    std::size_t RowCount = 0;
+    std::vector<std::string> Parts;
+};
+
+inline bool ValidCatalogId(std::string_view id)
+{
+    return id.size() == 64 && id.find_first_not_of("0123456789ABCDEF") == std::string_view::npos;
+}
+
+inline std::optional<SnapshotCatalog> BuildSnapshotCatalog(std::string id,
+    std::vector<std::string> const& rows)
+{
+    auto parts = PackSnapshotRows(rows);
+    if (!ValidCatalogId(id) || !parts)
+        return std::nullopt;
+    return SnapshotCatalog{std::move(id), rows.size(), std::move(*parts)};
+}
+
+inline std::optional<std::vector<std::string>> BuildSnapshotMessages(std::string const& token,
+    std::uint64_t sequence, std::string_view names, std::vector<std::string> const& rows,
+    SnapshotCatalog const& catalog = {}, bool reuseCatalog = false)
+{
+    auto const caps = EncodeCapabilities(names);
+    constexpr char tokenCharacters[] = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789";
+    if (!caps || token.empty() || token.size() > 32
+        || token.find_first_not_of(tokenCharacters) != std::string::npos
+        || !sequence || sequence > 9007199254740991ULL
+        || !ValidCatalogId(catalog.Id)
+        || catalog.RowCount > 4096 || rows.size() > 4096 - catalog.RowCount)
+        return std::nullopt;
+    auto parts = PackSnapshotRows(rows);
+    if (!parts)
+        return std::nullopt;
+    auto const sharedParts = reuseCatalog ? 0 : catalog.Parts.size();
+    auto const partCount = sharedParts + parts->size();
+    if (partCount > 1024)
+        return std::nullopt;
     std::string const header = "~" + std::to_string(ProtocolVersion) + '~' + token + '~' + std::to_string(sequence);
     std::vector<std::string> messages;
-    messages.push_back("BEGIN" + header + '~' + *caps + '~' + std::to_string(rows.size())
-        + '~' + std::to_string(parts.size()));
-    for (std::size_t index = 0; index < parts.size(); ++index)
-        messages.push_back("PART" + header + '~' + std::to_string(index + 1) + '~' + parts[index]);
+    messages.push_back("BEGIN" + header + '~' + *caps + '~'
+        + std::to_string(rows.size() + (reuseCatalog ? 0 : catalog.RowCount)) + '~' + std::to_string(partCount)
+        + '~' + catalog.Id + '~' + (reuseCatalog ? "R" : std::to_string(catalog.RowCount)));
+    for (std::size_t index = 0; index < partCount; ++index)
+        messages.push_back("PART" + header + '~' + std::to_string(index + 1) + '~'
+            + (index < sharedParts ? catalog.Parts[index] : (*parts)[index - sharedParts]));
     messages.push_back("END" + header);
     for (auto const& message : messages)
         if (message.size() > 240)

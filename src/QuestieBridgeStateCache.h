@@ -8,7 +8,6 @@
 
 #include <chrono>
 #include <cstdint>
-#include <map>
 #include <optional>
 #include <set>
 #include <string>
@@ -49,31 +48,24 @@ bool IsQuestCreatureObservable(Observer const* player, Target const* creature)
     return player->HaveAtClient(creature) && player->CanSeeOrDetect(creature, false, true);
 }
 
-struct MapQuestCreatures
+// The caller owns these pointers only during the current world update.
+template <typename Target, typename Observer>
+std::vector<Target*> CollectObservableQuestCreatures(Observer* player, std::set<std::uint32_t> const& entries)
 {
-    std::set<std::uint32_t> Starters;
-    std::set<std::uint32_t> Patrols;
-};
-
-// Rebuilt each world tick; store spawn identities, never core-owned pointers.
-class MapQuestCreatureCache
-{
-public:
-    template <typename Builder>
-    MapQuestCreatures const& Get(std::uint32_t map, std::uint32_t instance, Builder&& builder)
+    std::vector<Target*> creatures;
+    auto const zone = player->GetZoneId();
+    player->DoForAllVisibleWorldObjects([&](auto* object)
     {
-        auto const key = std::make_pair(map, instance);
-        auto found = _maps.find(key);
-        if (found == _maps.end())
-            found = _maps.emplace(key, std::forward<Builder>(builder)()).first;
-        return found->second;
-    }
-
-    void Reset() { _maps.clear(); }
-
-private:
-    std::map<std::pair<std::uint32_t, std::uint32_t>, MapQuestCreatures> _maps;
-};
+        Target* creature = object->ToCreature();
+        if (!creature || !creature->GetSpawnId() || !entries.contains(creature->GetEntry())
+            || creature->GetMap() != player->GetMap()
+            || !creature->IsInWorld() || !creature->IsAlive() || creature->GetZoneId() != zone
+            || !IsQuestCreatureObservable(player, creature) || creature->IsHostileTo(player))
+            return;
+        creatures.push_back(creature);
+    });
+    return creatures;
+}
 
 // Own only serialized values. Players, NPCs and core-owned catalogs are sampled
 // by the builder on the world thread and must never be retained here.

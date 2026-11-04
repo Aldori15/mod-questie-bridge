@@ -26,6 +26,16 @@ struct QuestConditionIndex
     std::size_t Quests = 0;
 };
 
+template <typename Quests, typename Conditions>
+std::map<std::uint32_t, bool> FindQuestConditionCandidates(Quests const& quests, Conditions const& conditions)
+{
+    std::map<std::uint32_t, bool> candidates;
+    for (auto const& [id, quest] : quests)
+        if (id && quest && !conditions(id).empty())
+            candidates.emplace(id, true);
+    return candidates;
+}
+
 template <typename Conditions, typename References>
 std::optional<std::string> QuestConditionSignature(Conditions const& conditions, References const& references,
     std::size_t& nodes, std::size_t depth = 0)

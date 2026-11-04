@@ -38,7 +38,7 @@ No SQL installation is required. Enable **Available Scourge Invasion Quests** or
 
 ## Configuration
 
-Options default to `1` (enabled), except experimental `QuestConditions`, which defaults to `0`.
+Feature switches default to `1` (enabled), except experimental `QuestConditions`, which defaults to `0`.
 Set an option to `0` to disable it, then run `.reload config`.
 
 | Option | Controls |
@@ -62,6 +62,15 @@ Set an option to `0` to disable it, then run `.reload config`.
 | `QuestieBridge.QuestReputation` | Quest reputation rates and active reputation bonuses |
 | `QuestieBridge.QuestMoney` | Ordinary and maximum-level bonus money rates |
 
+Work runs in rotating batches every 100ms. `MaxWorkTimeMs` defaults to `2` (checked between players),
+`MaxSubscribersPerUpdate` to `64`, and `MaxMessagesPerUpdate` to `256`. Shared rebuilds and individual
+checks can exceed the cooperative time budget. Delivery bounds queued snapshots and reserves capacity
+for heartbeats and patrols. Unfinished snapshots are discarded after four seconds.
+Overload can delay updates or restore static fallback.
+`PerformanceLogging = 1` writes aggregate timings and traffic once per minute to `module.questiebridge`.
+Timings are calls/total microseconds/maximum microseconds; byte counts cover state and patrol payloads.
+Phase timings overlap; use `updates` for total bridge time.
+
 ## Checking the connection
 
 | Command | Shows |
@@ -84,6 +93,7 @@ Set an option to `0` to disable it, then run `.reload config`.
 
 Changes normally appear within a few seconds. Rehover or reopen reward displays to refresh them.
 Shared catalogs are cached; player-specific changes send smaller complete updates.
+Matching ACKs renew subscriptions without forcing state rebuilding. Regular verification still runs.
 NPC sampling visits the player's visible objects, with positions and visibility checked individually.
 Rate changes through `.reload config` and `.reload reputation_reward_rate` need no addon reload
 or corrections regeneration. XP bonuses do not increase the maximum-level money bonus.
@@ -158,6 +168,8 @@ into parts of at most 150 bytes, with at most 4,096 logical rows and 1,024 trans
 Tokens are 1–32 alphanumeric characters; sequences are positive integers up to `9007199254740991`.
 The client validates tokens, sequences, counts, and every row before atomic replacement; incomplete
 batches are discarded after five seconds. State expires after 30 seconds without a valid snapshot or heartbeat.
+A valid `INFO READY` permits waiting up to 30 seconds from WATCH for initial delivery;
+BEGIN still starts a fixed five-second assembly deadline. INFO never renews quest-state freshness.
 
 Catalog IDs are 64 uppercase hexadecimal SHA-256 digits identifying shared contents and capabilities.
 A numeric `catalogRowsOrR` declares the shared prefix of a full batch; `R` reuses a matching fresh catalog.

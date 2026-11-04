@@ -19,6 +19,17 @@ namespace QuestieBridge
 using StateClock = std::chrono::steady_clock;
 constexpr auto StateCheckInterval = std::chrono::seconds(2);
 
+template <typename Subscribers, typename Key>
+auto NextSubscriber(Subscribers& subscribers, Key& cursor)
+{
+    auto next = subscribers.upper_bound(cursor);
+    if (next == subscribers.end())
+        next = subscribers.begin();
+    if (next != subscribers.end())
+        cursor = next->first;
+    return next;
+}
+
 struct CommonState
 {
     std::string Caps;
@@ -74,9 +85,9 @@ class CommonStateCache
 public:
     template <typename Builder>
     CommonState const& Get(StateClock::time_point now, std::uint32_t capabilities,
-        bool dirty, bool replyRequested, Builder&& builder)
+        bool dirty, Builder&& builder)
     {
-        if (!_state || capabilities != _capabilities || dirty || replyRequested
+        if (!_state || capabilities != _capabilities || dirty
             || now - _lastRefresh >= StateCheckInterval)
         {
             auto state = std::forward<Builder>(builder)();
@@ -97,6 +108,13 @@ public:
     }
 
     std::uint64_t GetRevision() const { return _revision; }
+
+    bool CanRenewPlayer(StateClock::time_point now, StateClock::time_point lastCheck,
+        std::uint64_t revision) const
+    {
+        return _state && revision == _revision && now - lastCheck < StateCheckInterval;
+    }
+
     void Reset() { _state.reset(); }
 
 private:

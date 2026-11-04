@@ -7,9 +7,11 @@
 #include "QuestieBridgeStateCache.h"
 #include "QuestieBridgeProtocol.h"
 #include "QuestieBridgeConditions.h"
+#include "QuestieBridgeDelivery.h"
 
 #include <iostream>
 #include <map>
+#include <memory>
 #include <stdexcept>
 
 namespace
@@ -169,6 +171,46 @@ void TestQuestConditions()
     }
     Require(distinctEvaluations == 500 * QuestieBridge::QuestConditionsMaxQuests,
         "distinct-expression work stays within the per-player budget");
+
+    std::map<std::uint32_t, int> catalog;
+    for (std::uint32_t id = 1; id <= 1000; ++id)
+        catalog[id] = 1;
+    auto safe = std::make_unique<Condition>(Condition{8, 66008});
+    Condition contextual{4, 12};
+    std::map<std::uint32_t, List> loaded = {{100, {safe.get()}}, {200, {&contextual}}};
+    std::size_t candidateLookups = 0;
+    auto currentConditions = [&](std::uint32_t id)
+    {
+        ++candidateLookups;
+        auto const found = loaded.find(id);
+        return found == loaded.end() ? List{} : found->second;
+    };
+    auto candidates = QuestieBridge::FindQuestConditionCandidates(catalog, currentConditions);
+    Require(candidateLookups == 1000 && candidates.size() == 2 && candidates.at(100) && candidates.at(200),
+        "discovery keeps condition-bearing IDs, including currently unsupported expressions");
+    candidateLookups = 0;
+    for (int update = 0; update < 1000; ++update)
+    {
+        auto const current = QuestieBridge::BuildQuestConditionIndex(candidates, currentConditions, refs);
+        Require(current && current->Quests == 1, "each pass classifies only the current candidate expressions");
+    }
+    Require(candidateLookups == 2000, "1000 classification passes inspect two candidates, not 1000 quest templates");
+    auto const beforeReload = QuestieBridge::BuildQuestConditionIndex(candidates, currentConditions, refs);
+    loaded[100] = {&contextual};
+    safe.reset();
+    auto current = QuestieBridge::BuildQuestConditionIndex(candidates, currentConditions, refs);
+    Require(current && !current->Quests && beforeReload && beforeReload->Quests == 1,
+        "reload reclassifies newly unsafe conditions without retaining condition pointers");
+    loaded[100].clear();
+    loaded[300] = {&progression};
+    current = QuestieBridge::BuildQuestConditionIndex(candidates, currentConditions, refs);
+    Require(current && !current->Quests, "removed conditions drop authority before candidate rediscovery");
+    candidates = QuestieBridge::FindQuestConditionCandidates(catalog, currentConditions);
+    current = QuestieBridge::BuildQuestConditionIndex(candidates, currentConditions, refs);
+    Require(candidates.size() == 2 && !candidates.contains(100) && candidates.contains(300)
+        && current && current->Quests == 1 && current->Groups.begin()->second == std::vector<std::uint32_t>{300},
+        "rediscovery finds added condition-bearing quests and removes empty entries");
+    std::cout << "Condition discovery: 1000 templates once; 1000 subsequent passes, 2000 candidate lookups\n";
 }
 
 void TestWireCapabilities()
@@ -380,16 +422,16 @@ void TestRefreshAndOwnership()
     CommonState source{"EVENTS,HEARTBEAT", {"E:5:0:0:0"}, std::nullopt, false};
     int builds = 0;
     auto build = [&]() { ++builds; return source; };
-    Require(cache.Get(start, 1, false, false, build).Rows == source.Rows, "initial state built");
+    Require(cache.Get(start, 1, false, build).Rows == source.Rows, "initial state built");
     auto revision = cache.GetRevision();
     source.Rows[0] = "E:5:0:0:1";
-    Require(cache.Get(start + 1s, 1, false, false, build).Rows[0] == "E:5:0:0:0",
+    Require(cache.Get(start + 1s, 1, false, build).Rows[0] == "E:5:0:0:0",
         "cache owns values rather than borrowed source references");
     Require(builds == 1, "intermediate tick must reuse cache");
-    Require(cache.Get(start + 2s, 1, false, false, build).Rows == source.Rows, "periodic change detected");
+    Require(cache.Get(start + 2s, 1, false, build).Rows == source.Rows, "periodic change detected");
     Require(builds == 2 && cache.GetRevision() != revision, "changed state advances revision");
     revision = cache.GetRevision();
-    cache.Get(start + 4s, 1, false, false, build);
+    cache.Get(start + 4s, 1, false, build);
     Require(builds == 3 && cache.GetRevision() == revision, "unchanged polling preserves revision");
 }
 
@@ -400,19 +442,19 @@ void TestDirtyRequestsAndCapabilityReload()
     CommonState source{"HEARTBEAT", {}, std::nullopt, false};
     int builds = 0;
     auto build = [&]() { ++builds; return source; };
-    cache.Get(start, 1, false, false, build);
+    cache.Get(start, 1, false, build);
     auto revision = cache.GetRevision();
-    cache.Get(start + 100ms, 1, false, true, build);
-    Require(builds == 2 && cache.GetRevision() == revision, "ACK/WATCH refreshes without fake change");
+    cache.Get(start + 100ms, 1, false, build);
+    Require(builds == 1 && cache.GetRevision() == revision, "requests do not force shared rebuilding");
     source.Rows = {"Q:13830:5676:1", "Q:13832:5676:0"};
-    cache.Get(start + 200ms, 1, true, false, build);
-    Require(builds == 3 && cache.GetRevision() != revision, "dirty event refreshes immediately");
+    cache.Get(start + 200ms, 1, true, build);
+    Require(builds == 2 && cache.GetRevision() != revision, "dirty event refreshes immediately");
     revision = cache.GetRevision();
-    cache.Get(start + 300ms, 2, false, false, build);
-    Require(builds == 4 && cache.GetRevision() != revision, "capability changes affect player checks");
+    cache.Get(start + 300ms, 2, false, build);
+    Require(builds == 3 && cache.GetRevision() != revision, "capability changes affect player checks");
     revision = cache.GetRevision();
-    cache.Get(start + 400ms, 2, true, false, build);
-    Require(builds == 5 && cache.GetRevision() == revision, "same-mask config reload still rebuilds");
+    cache.Get(start + 400ms, 2, true, build);
+    Require(builds == 4 && cache.GetRevision() == revision, "same-mask config reload still rebuilds");
 }
 
 void TestCatalogChanges()
@@ -421,31 +463,31 @@ void TestCatalogChanges()
     auto const start = StateClock::time_point{};
     CommonState source{"HEARTBEAT", {}, std::nullopt, false};
     auto build = [&]() { return source; };
-    cache.Get(start, 1, false, false, build);
+    cache.Get(start, 1, false, build);
     auto revision = cache.GetRevision();
     source.ReputationRows.emplace();
-    cache.Get(start + 2s, 1, false, false, build);
+    cache.Get(start + 2s, 1, false, build);
     Require(cache.GetRevision() != revision, "empty complete rate catalog differs from unavailable");
     revision = cache.GetRevision();
     source.ReputationRows->push_back("T:1124:1065353216:1065353216:1065353216:1065353216:1065353216");
-    cache.Get(start + 4s, 1, false, false, build);
+    cache.Get(start + 4s, 1, false, build);
     Require(cache.GetRevision() != revision, "faction rate reload changes revision");
     revision = cache.GetRevision();
     source.ReputationRows.reset();
-    cache.Get(start + 6s, 1, false, false, build);
+    cache.Get(start + 6s, 1, false, build);
     Require(cache.GetRevision() != revision, "unavailable catalog cannot retain stale live rates");
     revision = cache.GetRevision();
     source.ReportResets = true;
-    cache.Get(start + 8s, 1, false, false, build);
+    cache.Get(start + 8s, 1, false, build);
     Require(cache.GetRevision() != revision, "reset reporting changes are observed");
     revision = cache.GetRevision();
     source.Caps = "RESETS,HEARTBEAT";
     source.Rows = {"P:QUEST_RESETS:1792058400:1793527200"};
-    cache.Get(start + 10s, 1, false, false, build);
+    cache.Get(start + 10s, 1, false, build);
     Require(cache.GetRevision() != revision, "reset deadlines are part of cached data");
     revision = cache.GetRevision();
     source.Rows.clear();
-    cache.Get(start + 12s, 1, false, false, build);
+    cache.Get(start + 12s, 1, false, build);
     Require(cache.GetRevision() != revision, "removed rows are not retained");
 }
 
@@ -455,7 +497,7 @@ void TestPlayerChecks()
     auto const start = StateClock::time_point{};
     CommonState source{"HEARTBEAT", {}, std::nullopt, false};
     auto build = [&]() { return source; };
-    cache.Get(start, 1, false, false, build);
+    cache.Get(start, 1, false, build);
     auto const revision = cache.GetRevision();
     Require(!cache.ShouldCheckPlayer(start + 1s, start, revision, false, false, false),
         "unchanged player skips intermediate tick");
@@ -468,9 +510,129 @@ void TestPlayerChecks()
     Require(cache.ShouldCheckPlayer(start + 1s, start, revision, false, false, true),
         "initial/lost snapshot is rebuilt");
     source.Rows = {"P:KA_FINISHED:1"};
-    cache.Get(start + 1s, 1, false, true, build);
+    cache.Get(start + 1s, 1, true, build);
     Require(cache.ShouldCheckPlayer(start + 1s, start, revision, false, false, false),
         "new common state reaches players checked recently");
+}
+
+void TestAckRenewals()
+{
+    CommonStateCache cache;
+    auto const start = StateClock::time_point{};
+    CommonState source{"HEARTBEAT", {}, std::nullopt, false};
+    std::size_t builds = 0;
+    auto build = [&]() { ++builds; return source; };
+    cache.Get(start, 1, false, build);
+    auto const revision = cache.GetRevision();
+    for (int subscriber = 0; subscriber < 1000; ++subscriber)
+    {
+        auto const now = start + 100ms + std::chrono::microseconds(subscriber);
+        cache.Get(now, 1, false, build);
+        Require(cache.CanRenewPlayer(now, start, revision), "matching ACK can renew recently checked state");
+        Require(!cache.ShouldCheckPlayer(now, start, revision, false, false, false),
+            "matching ACK does not force another player evaluation");
+    }
+    Require(builds == 1, "1000 matching idle ACKs share one existing common sample");
+    Require(!cache.CanRenewPlayer(start + 2s, start, revision), "ACK cannot renew overdue player state");
+    Require(!cache.CanRenewPlayer(start + 1s, start, revision + 1), "ACK cannot renew an unmatched common revision");
+    source.Rows = {"E:5:0:0:1"};
+    cache.Get(start + 1s, 1, true, build);
+    Require(!cache.CanRenewPlayer(start + 1s, start, revision), "changed shared state requires player verification");
+    cache.Reset();
+    Require(!cache.CanRenewPlayer(start + 1s, start, cache.GetRevision()), "reset state cannot authorize a heartbeat");
+    std::cout << "Idle ACKs: 1000 subscribers, one shared build, no forced player checks\n";
+}
+
+void TestSubscriberScheduling()
+{
+    std::map<std::uint32_t, int> subscribers;
+    for (std::uint32_t id = 1; id <= 1000; ++id)
+        subscribers.emplace(id, 0);
+    std::uint32_t cursor = 0;
+    std::size_t visits = 0, updates = 0;
+    while (visits < subscribers.size())
+    {
+        std::size_t checked = 0;
+        while (checked < 32 && visits < subscribers.size())
+        {
+            auto const next = QuestieBridge::NextSubscriber(subscribers, cursor);
+            Require(next != subscribers.end(), "active subscriber remains schedulable");
+            ++next->second;
+            ++checked;
+            ++visits;
+        }
+        ++updates;
+        Require(checked <= 32, "subscriber scheduling respects the per-update count allowance");
+    }
+    for (auto const& [id, count] : subscribers)
+    {
+        (void)id;
+        Require(count == 1, "a bounded round visits every subscriber without starvation");
+    }
+    Require(updates == 32, "1000 subscribers spread over 32 bounded updates");
+    Require(QuestieBridge::NextSubscriber(subscribers, cursor)->first == 1, "cursor wraps after the last subscriber");
+    cursor = 500;
+    subscribers.erase(cursor);
+    Require(QuestieBridge::NextSubscriber(subscribers, cursor)->first == 501,
+        "logout at the cursor preserves progress");
+    cursor = 1000;
+    subscribers.emplace(1001, 0);
+    Require(QuestieBridge::NextSubscriber(subscribers, cursor)->first == 1001, "new subscribers enter the next round");
+    subscribers.erase(1001);
+    Require(QuestieBridge::NextSubscriber(subscribers, cursor)->first == 1, "erased final cursor wraps safely");
+    subscribers.clear();
+    Require(QuestieBridge::NextSubscriber(subscribers, cursor) == subscribers.end(),
+        "empty subscriber list remains idle");
+}
+
+void TestSnapshotDelivery()
+{
+    auto const start = StateClock::time_point{};
+    std::vector<std::string> shared;
+    for (std::uint32_t id = 1; id <= 673; ++id)
+        shared.push_back("D:" + std::to_string(id));
+    auto const catalog = QuestieBridge::BuildSnapshotCatalog(std::string(64, 'A'), shared);
+    Require(catalog.has_value(), "delivery fixture has a complete shared catalog");
+    auto messages = QuestieBridge::BuildSnapshotMessages("first", 1, "QUESTDISABLES,HEARTBEAT", {}, *catalog);
+    Require(messages && messages->size() > 8, "full catalog requires multiple bounded dispatches");
+    QuestieBridge::SnapshotDelivery delivery(*messages, start);
+    std::vector<std::string> sent;
+    auto send = [&](std::string const& message) { sent.push_back(message); };
+    Require(delivery.Dispatch(0, send) == 0 && delivery.Remaining() == messages->size(),
+        "zero allowance sends nothing and preserves the complete pending batch");
+    Require(delivery.Dispatch(4, send) == 4 && sent.front() == messages->front()
+        && !delivery.Complete() && delivery.Remaining() == messages->size() - 4,
+        "dispatch is bounded and does not send END before the remaining parts");
+    while (!delivery.Complete())
+        Require(delivery.Dispatch(8, send) <= 8, "every subsequent dispatch respects its allowance");
+    Require(sent == *messages && delivery.Remaining() == 0 && delivery.Dispatch(8, send) == 0,
+        "all parts preserve order and completed batches cannot resend");
+    Require(!delivery.Expired(start + 3999ms) && delivery.Expired(start + 4s),
+        "pending delivery expires before the client's five-second assembly timeout");
+
+    auto source = *messages;
+    QuestieBridge::SnapshotDelivery owned(source, start);
+    source.front() = "changed";
+    sent.clear();
+    owned.Dispatch(1, send);
+    Require(sent == std::vector<std::string>{messages->front()}, "queued messages own their copied values");
+
+    std::optional<QuestieBridge::SnapshotDelivery> pending;
+    pending.emplace(*messages, start);
+    sent.clear();
+    pending->Dispatch(1, send);
+    Require(pending->Expired(start + 4s), "partial delivery becomes stale without completing authority");
+    pending.reset();
+    auto replacement = QuestieBridge::BuildSnapshotMessages("replacement", 2, "HEARTBEAT", {});
+    Require(replacement.has_value(), "replacement snapshot is complete");
+    pending.emplace(*replacement, start + 4s);
+    pending->Dispatch(replacement->size(), send);
+    Require(pending->Complete() && sent.size() == replacement->size() + 1,
+        "owner can discard an expired or superseded queue and deliver a replacement");
+    for (std::size_t index = 0; index < replacement->size(); ++index)
+        Require(sent[index + 1] == (*replacement)[index], "replacement never sends leftover parts from the old token");
+    pending.reset();
+    Require(!pending, "disconnect or disable releases all queued messages");
 }
 
 void TestResetAndIdleWork()
@@ -479,10 +641,10 @@ void TestResetAndIdleWork()
     auto const start = StateClock::time_point{};
     int builds = 0;
     auto build = [&]() { ++builds; return CommonState{"HEARTBEAT", {}, std::nullopt, false}; };
-    cache.Get(start, 1, false, false, build);
+    cache.Get(start, 1, false, build);
     auto const revision = cache.GetRevision();
     cache.Reset();
-    cache.Get(start + 100ms, 1, false, false, build);
+    cache.Get(start + 100ms, 1, false, build);
     Require(builds == 2 && cache.GetRevision() != revision, "idle/disable reset forces a fresh next sample");
 
     CommonStateCache idle;
@@ -493,7 +655,7 @@ void TestResetAndIdleWork()
     for (int tick = 0; tick < 1000; ++tick)
     {
         auto const now = start + std::chrono::seconds(tick);
-        idle.Get(now, 1, false, false, build);
+        idle.Get(now, 1, false, build);
         if (idle.ShouldCheckPlayer(now, lastCheck, lastRevision, false, false, tick == 0))
         {
             ++playerChecks;
@@ -514,7 +676,7 @@ void TestQuestgiverCatalog()
     int builds = 0;
     auto build = [&]() { ++builds; return source; };
     auto const start = StateClock::time_point{};
-    auto const& common = cache.Get(start, 1, false, false, build);
+    auto const& common = cache.Get(start, 1, false, build);
     auto const revision = cache.GetRevision();
     for (int player = 0; player < 1000; ++player)
     {
@@ -532,16 +694,16 @@ void TestQuestgiverCatalog()
         "overflow does not append a partial catalog or capability");
     source.RestrictedGiverTemplates.clear();
     source.GiverTemplateRows = {"P:QGT_COUNT:0"};
-    cache.Get(start + 2s, 1, false, false, build);
+    cache.Get(start + 2s, 1, false, build);
     Require(cache.GetRevision() != revision, "template restoration advances revision");
     auto const restored = cache.GetRevision();
-    cache.Get(start + 4s, 1, false, false, build);
+    cache.Get(start + 4s, 1, false, build);
     Require(cache.GetRevision() == restored, "unchanged template polling preserves revision");
     source.GiverTemplateRows.reset();
-    cache.Get(start + 5s, 2, true, false, build);
+    cache.Get(start + 5s, 2, true, build);
     Require(cache.GetRevision() != restored, "capability removal invalidates global state");
     rows.clear();
-    Require(!cache.Get(start + 5s, 2, false, false, build).AppendGiverTemplates(rows, caps, 0),
+    Require(!cache.Get(start + 5s, 2, false, build).AppendGiverTemplates(rows, caps, 0),
         "unavailable catalog is distinct from an empty complete catalog");
 }
 
@@ -703,6 +865,9 @@ int main()
         TestDirtyRequestsAndCapabilityReload();
         TestCatalogChanges();
         TestPlayerChecks();
+        TestAckRenewals();
+        TestSubscriberScheduling();
+        TestSnapshotDelivery();
         TestResetAndIdleWork();
         TestQuestgiverCatalog();
         TestVisibleCandidates();
@@ -712,7 +877,7 @@ int main()
         TestSnapshotCatalogs();
         TestCatalogWireReduction();
         TestQuestConditions();
-        std::cout << "Common state cache, conditions and protocol: 13 regression groups passed\n";
+        std::cout << "Common state cache, conditions, delivery and protocol: 16 regression groups passed\n";
         return 0;
     }
     catch (std::exception const& error)

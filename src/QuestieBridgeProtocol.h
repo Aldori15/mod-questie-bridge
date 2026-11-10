@@ -16,7 +16,7 @@
 
 namespace QuestieBridge
 {
-constexpr std::uint32_t ProtocolVersion = 21;
+constexpr std::uint32_t ProtocolVersion = 22;
 using CapabilityMask = std::array<std::uint32_t, 4>;
 
 struct WireCapability

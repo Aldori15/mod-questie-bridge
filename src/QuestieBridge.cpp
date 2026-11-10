@@ -79,6 +79,7 @@ std::atomic<uint32> Capabilities{Events | Values | Progress | Kaluak | QuestPool
     | Resets | Phases | Patrols | QuestXP | QuestReputation | QuestMoney
     | QuestDisables | Questgivers | QuestgiverTemplates};
 std::atomic<bool> Dirty{false};
+std::atomic<bool> EventsChanged{false};
 using Clock = std::chrono::steady_clock;
 
 struct PendingSnapshot
@@ -87,7 +88,6 @@ struct PendingSnapshot
     std::string Signature;
     std::string Catalog;
     uint64 Sequence;
-    uint64 Revision;
 };
 
 struct Subscriber
@@ -174,7 +174,7 @@ struct Performance
     uint64 Cancelled = 0;
 };
 
-std::vector<std::string> GetQuestPoolRows()
+std::vector<std::string> GetQuestPoolRows(std::vector<std::string>& selections)
 {
     // Every accepted quest pool member has a creature or gameobject starter.
     // Read loaded relations, then validate membership against PoolMgr. This also
@@ -189,9 +189,15 @@ std::vector<std::string> GetQuestPoolRows()
     collect(sPoolMgr->mQuestCreatureRelation);
     collect(sPoolMgr->mQuestGORelation);
     std::vector<std::string> rows;
+    std::vector<std::string> active;
     for (auto const& [questId, poolId] : members)
-        rows.push_back("Q:" + std::to_string(questId) + ':' + std::to_string(poolId)
-            + (sPoolMgr->IsSpawnedObject<Quest>(questId) ? ":1" : ":0"));
+    {
+        rows.push_back("Q:" + std::to_string(questId) + ':' + std::to_string(poolId));
+        if (sPoolMgr->IsSpawnedObject<Quest>(questId))
+            active.push_back("S:" + std::to_string(questId));
+    }
+    selections.push_back("P:POOL_COUNT:" + std::to_string(active.size()));
+    selections.insert(selections.end(), active.begin(), active.end());
     return rows;
 }
 
@@ -289,9 +295,11 @@ QuestieBridge::CommonState BuildCommonState(uint32 capabilities)
 {
     std::string caps;
     std::vector<std::string> commonRows;
+    std::vector<std::string> liveRows;
     if (capabilities & Events)
     {
         caps = "EVENTS";
+        std::vector<std::string> active;
         auto const& events = sGameEventMgr->GetEventMap();
         for (std::size_t id = 1; id < events.size() && id <= std::numeric_limits<uint16>::max(); ++id)
         {
@@ -301,15 +309,22 @@ QuestieBridge::CommonState BuildCommonState(uint32 capabilities)
             bool const mainStage = event.HolidayId != HOLIDAY_NONE
                 && event.HolidayStage == sGameEventMgr->GetHolidayMainStage(event.HolidayId);
             commonRows.push_back("E:" + std::to_string(id) + ':' + std::to_string(event.HolidayId)
-                + (mainStage ? ":1:" : ":0:") + (sGameEventMgr->IsActiveEvent(uint16(id)) ? "1" : "0"));
+                + (mainStage ? ":1" : ":0"));
+            if (sGameEventMgr->IsActiveEvent(uint16(id)))
+                active.push_back("A:" + std::to_string(id));
             // Never advertise a partial catalog as authoritative. Leave room for
             // progress/subscriptions within the client's bounded snapshot limits.
-            if (commonRows.size() > 4000)
+            if (commonRows.size() + active.size() + 1 > 4000)
             {
                 caps.clear();
                 commonRows.clear();
                 break;
             }
+        }
+        if (!caps.empty())
+        {
+            liveRows.push_back("P:EVENT_COUNT:" + std::to_string(active.size()));
+            liveRows.insert(liveRows.end(), active.begin(), active.end());
         }
     }
     auto addCapability = [&caps](std::string const& value)
@@ -333,7 +348,7 @@ QuestieBridge::CommonState BuildCommonState(uint32 capabilities)
     {
         addCapability("SCOURGE");
         addCapability("QUELDANAS");
-        AppendQuestieBridgeProgress(commonRows);
+        AppendQuestieBridgeProgress(liveRows);
     }
     addCapability("HEARTBEAT");
     if (capabilities & Patrols)
@@ -341,16 +356,17 @@ QuestieBridge::CommonState BuildCommonState(uint32 capabilities)
     if (capabilities & Kaluak)
     {
         addCapability("KALUAK");
-        commonRows.push_back("P:KA_FINISHED:" + GetQuestieBridgeKaluakFinished());
+        liveRows.push_back("P:KA_FINISHED:" + GetQuestieBridgeKaluakFinished());
     }
     if (capabilities & Wintergrasp)
     {
         addCapability("WINTERGRASP");
-        AppendQuestieBridgeWintergrasp(commonRows);
+        AppendQuestieBridgeWintergrasp(liveRows);
     }
     if (capabilities & QuestPools)
     {
-        auto const rows = GetQuestPoolRows();
+        std::vector<std::string> selections;
+        auto const rows = GetQuestPoolRows(selections);
         // Reserve per-player worldstate and ICC rows. Never send a
         // partial pool catalog: omissions would make inactive choices unknown.
         std::size_t const reserved = 16 + (reportResets ? 1 : 0)
@@ -358,10 +374,11 @@ QuestieBridge::CommonState BuildCommonState(uint32 capabilities)
             + ((capabilities & Phases) ? PhaseMaxRows : 0) + ((capabilities & QuestXP) ? 1 : 0)
             + ((capabilities & QuestReputation) ? QuestieBridge::ReputationMaxRows : 0)
             + ((capabilities & QuestMoney) ? 1 : 0);
-        if (commonRows.size() + rows.size() + reserved <= 4096)
+        if (commonRows.size() + liveRows.size() + rows.size() + selections.size() + reserved <= 4096)
         {
             addCapability("QUESTPOOLS");
             commonRows.insert(commonRows.end(), rows.begin(), rows.end());
+            liveRows.insert(liveRows.end(), selections.begin(), selections.end());
         }
     }
 
@@ -378,7 +395,7 @@ QuestieBridge::CommonState BuildCommonState(uint32 capabilities)
             + ((capabilities & QuestReputation) ? QuestieBridge::ReputationMaxRows : 0)
             + ((capabilities & QuestMoney) ? 1 : 0);
 
-        if (commonRows.size() + disabled.size() + reserved <= 4096)
+        if (commonRows.size() + liveRows.size() + disabled.size() + reserved <= 4096)
         {
             std::sort(disabled.begin(), disabled.end());
             addCapability("QUESTDISABLES");
@@ -390,6 +407,7 @@ QuestieBridge::CommonState BuildCommonState(uint32 capabilities)
     auto reputationRows = (capabilities & QuestReputation)
         ? QuestieBridge::GetQuestReputationFactionRows() : std::nullopt;
     QuestieBridge::CommonState common{std::move(caps), std::move(commonRows), std::move(reputationRows), reportResets};
+    common.LiveRows = std::move(liveRows);
     if (capabilities & (Questgivers | QuestgiverTemplates | Patrols))
     {
         for (auto const& relation : *sObjectMgr->GetCreatureQuestRelationMap())
@@ -518,12 +536,13 @@ public:
                 subscriber.CommonRevision = 0;
             }
         }
-        auto const& common = _commonState.Get(now, capabilities, dirty, [this, capabilities]()
+        bool const eventsChanged = EventsChanged.exchange(false);
+        auto const& common = _commonState.Get(now, capabilities, dirty || eventsChanged, [this, capabilities]()
         {
             Measure measure(_diagnostics ? &_performance.Common : nullptr);
             return BuildCommonState(capabilities);
         });
-        if (!_catalog || _catalogRevision != _commonState.GetRevision())
+        if (!_catalog || _catalogRevision != _commonState.GetCatalogRevision())
         {
             Measure measure(_diagnostics ? &_performance.Encoding : nullptr);
             Acore::Crypto::SHA256 hash;
@@ -542,7 +561,7 @@ public:
                 id += digits[byte & 15];
             }
             _catalog = QuestieBridge::BuildSnapshotCatalog(std::move(id), common.Rows);
-            _catalogRevision = _commonState.GetRevision();
+            _catalogRevision = _commonState.GetCatalogRevision();
         }
         if (!_catalog)
             return;
@@ -589,7 +608,7 @@ public:
                 Measure measure(_diagnostics ? &_performance.Players : nullptr);
                 subscriber.LastStateCheck = now;
                 subscriber.CommonRevision = _commonState.GetRevision();
-                std::vector<std::string> rows;
+                std::vector<std::string> rows = common.LiveRows;
                 auto const sharedRows = common.Rows.size();
                 if (capabilities & Values)
                     for (uint32 id : subscriber.WorldStates)
@@ -785,7 +804,7 @@ private:
         }
         PendingMessages += messages->size();
         subscriber.Pending.emplace(PendingSnapshot{QuestieBridge::SnapshotDelivery(std::move(*messages), now),
-            std::move(signature), _catalog->Id, ++subscriber.Sequence, _commonState.GetRevision()});
+            std::move(signature), _catalog->Id, ++subscriber.Sequence});
         PendingSnapshots.push_back(player->GetGUID());
         if (_diagnostics)
             ++(reuse ? _performance.Reused : _performance.Full);
@@ -813,7 +832,7 @@ private:
                 continue;
             }
             auto& pending = *subscriber.Pending;
-            if (pending.Delivery.Expired(now) || pending.Revision != _commonState.GetRevision())
+            if (!pending.Delivery.CanContinue(now, pending.Catalog, _catalog->Id))
             {
                 CancelSnapshot(guid, subscriber);
                 subscriber.Previous.clear();
@@ -976,8 +995,8 @@ class QuestieBridgeEventScript final : public GameEventScript
 public:
     QuestieBridgeEventScript() : GameEventScript("QuestieBridgeEventScript",
         {GAMEEVENTHOOK_ON_START, GAMEEVENTHOOK_ON_STOP}) { }
-    void OnStart(uint16 /*eventId*/) override { Dirty.store(true); }
-    void OnStop(uint16 /*eventId*/) override { Dirty.store(true); }
+    void OnStart(uint16 /*eventId*/) override { EventsChanged.store(true); }
+    void OnStop(uint16 /*eventId*/) override { EventsChanged.store(true); }
 };
 
 class QuestieBridgeDatabaseScript final : public DatabaseScript

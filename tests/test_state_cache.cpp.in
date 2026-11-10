@@ -259,21 +259,22 @@ void TestSnapshotEncoding()
     auto const full = BuildSnapshotMessages(token, sequence, all, std::vector<std::string>(4096, std::string(36, 'x')));
     Require(full && full->size() == 1026, "maximum rows and parts form one complete batch");
     std::string const emptyCatalogId(64, '0');
-    Require(full->front() == "BEGIN~21~" + token + "~9007199254740991~0007FFFF~4096~1024~" + emptyCatalogId + "~0",
+    Require(QuestieBridge::ProtocolVersion == 22, "stable catalogs require protocol 22");
+    Require(full->front() == "BEGIN~22~" + token + "~9007199254740991~0007FFFF~4096~1024~" + emptyCatalogId + "~0",
         "maximum BEGIN carries compact capabilities and catalog metadata");
     Require(full->front().size() == 144, "maximum current BEGIN leaves 96 bytes of headroom");
-    std::string const futureBegin = "BEGIN~21~" + token + "~9007199254740991~"
+    std::string const futureBegin = "BEGIN~22~" + token + "~9007199254740991~"
         + QuestieBridge::EncodeCapabilityMask({0xFFFFFFFFU, 0xFFFFFFFFU, 0xFFFFFFFFU, 0xFFFFFFFFU})
         + "~4096~1024~" + emptyCatalogId + "~0";
     Require(futureBegin.size() == 171, "future four-word capability mask still fits the payload limit");
-    Require(full->back() == "END~21~" + token + "~9007199254740991", "END retains the snapshot anchor");
+    Require(full->back() == "END~22~" + token + "~9007199254740991", "END retains the snapshot anchor");
     for (auto const& message : *full)
         Require(message.size() <= 240, "every serialized message obeys the payload limit");
     auto const empty = BuildSnapshotMessages("t", 1, "", {});
-    Require(empty && *empty == std::vector<std::string>{"BEGIN~21~t~1~00000000~0~0~" + emptyCatalogId + "~0", "END~21~t~1"},
+    Require(empty && *empty == std::vector<std::string>{"BEGIN~22~t~1~00000000~0~0~" + emptyCatalogId + "~0", "END~22~t~1"},
         "empty snapshots remain complete and atomic");
-    auto const packed = BuildSnapshotMessages("t", 2, "EVENTS,HEARTBEAT", {"E:1:0:0:1", "E:2:0:0:0"});
-    Require(packed && (*packed)[1] == "PART~21~t~2~1~E:1:0:0:1;E:2:0:0:0", "multipart row encoding is unchanged");
+    auto const packed = BuildSnapshotMessages("t", 2, "EVENTS,HEARTBEAT", {"E:1:0:0", "E:2:0:0"});
+    Require(packed && (*packed)[1] == "PART~22~t~2~1~E:1:0:0;E:2:0:0", "multipart row encoding is unchanged");
     Require(BuildSnapshotMessages(token, sequence, "HEARTBEAT", {std::string(150, 'x')}).has_value(),
         "maximum part body fits with the longest token and sequence");
     Require(!BuildSnapshotMessages(token, sequence, "HEARTBEAT", {std::string(151, 'x')}),
@@ -310,22 +311,22 @@ void TestSnapshotCatalogs()
     using QuestieBridge::BuildSnapshotCatalog;
     using QuestieBridge::BuildSnapshotMessages;
     std::string const id(64, 'A');
-    auto const catalog = BuildSnapshotCatalog(id, {"E:1:0:0:1", "Q:13830:5676:1"});
+    auto const catalog = BuildSnapshotCatalog(id, {"E:1:0:0", "Q:13830:5676"});
     Require(catalog && catalog->RowCount == 2 && catalog->Parts.size() == 1, "shared rows pack once into an owned catalog");
     auto const full = BuildSnapshotMessages("t", 1, "EVENTS,QUESTPOOLS", {"P:LOCAL:1"}, *catalog);
     auto const reference = BuildSnapshotMessages("t", 2, "EVENTS,QUESTPOOLS", {"P:LOCAL:1"}, *catalog, true);
     Require(full && reference, "full and reference snapshots serialize through production helpers");
     auto const fullFields = BeginFields(*full);
     auto const refFields = BeginFields(*reference);
-    Require(fullFields.size() == 9 && refFields.size() == 9, "protocol 21 BEGIN has nine fields");
+    Require(fullFields.size() == 9 && refFields.size() == 9, "protocol 22 BEGIN has nine fields");
     Require(fullFields[5] == "3" && fullFields[6] == "2" && fullFields[7] == id && fullFields[8] == "2",
         "full BEGIN reports transmitted rows, parts, identity and shared prefix length");
     Require(refFields[5] == "1" && refFields[6] == "1" && refFields[7] == id && refFields[8] == "R",
         "reference BEGIN reports only private transmission and names the catalog");
     Require(std::stoull(fullFields[5]) == std::stoull(refFields[5]) + catalog->RowCount,
         "full and reference batches resolve to the same effective row count");
-    Require((*full)[1] == "PART~21~t~1~1~E:1:0:0:1;Q:13830:5676:1"
-        && (*full)[2] == "PART~21~t~1~2~P:LOCAL:1" && (*reference)[1] == "PART~21~t~2~1~P:LOCAL:1",
+    Require((*full)[1] == "PART~22~t~1~1~E:1:0:0;Q:13830:5676"
+        && (*full)[2] == "PART~22~t~1~2~P:LOCAL:1" && (*reference)[1] == "PART~22~t~2~1~P:LOCAL:1",
         "full batches send shared prefix first and references omit it");
     auto const noLocal = BuildSnapshotMessages("t", 3, "EVENTS", {}, *catalog, true);
     Require(noLocal && noLocal->size() == 2 && BeginFields(*noLocal)[5] == "0"
@@ -369,67 +370,103 @@ void TestSnapshotCatalogs()
 
 void TestCatalogWireReduction()
 {
-    std::vector<std::string> shared;
+    // Deterministic payload model, not a benchmark: identical framing, a fixed
+    // 32-character token, sequences 1/2, and 200 personal rows per subscriber.
+    // Protocol 21 invalidates its shared catalog on one live progress change;
+    // protocol 22 retains the static catalog already acknowledged by all players.
+    std::vector<std::string> oldShared, shared;
     for (int id = 1; id <= 182; ++id)
-        shared.push_back("E:" + std::to_string(id) + ":0:0:1");
-    for (int id = 1; id <= 159; ++id)
-        shared.push_back("Q:" + std::to_string(10000 + id) + ":5676:1");
+    {
+        shared.push_back("E:" + std::to_string(id) + ":0:0");
+        oldShared.push_back(shared.back() + (id <= 15 ? ":1" : ":0"));
+    }
+    for (int id = 1; id <= 161; ++id)
+    {
+        shared.push_back("Q:" + std::to_string(10000 + id) + ':' + std::to_string(5600 + (id - 1) / 4));
+        oldShared.push_back(shared.back() + (id <= 149 && (id - 1) % 4 == 0 ? ":1" : ":0"));
+    }
     for (int id = 1; id <= 718; ++id)
+    {
         shared.push_back("D:" + std::to_string(20000 + id));
-    std::vector<std::string> local;
-    for (int id = 1; id <= 10; ++id)
-        local.push_back("W:" + std::to_string(id) + ":1");
+        oldShared.push_back(shared.back());
+    }
+    std::vector<std::string> progress = {"U:21:50", "R:13830:1", "P:SC_ACTIVE:1",
+        "P:KA_FINISHED:0", "P:WG_STATE:1:0:0"};
+    shared.push_back("P:QUEST_RESETS:1792058400:1793527200");
+    oldShared.push_back(shared.back());
+    auto const oldProgressIndex = oldShared.size();
+    oldShared.insert(oldShared.end(), progress.begin(), progress.end());
+    std::vector<std::string> live = {"P:EVENT_COUNT:15", "P:POOL_COUNT:38"};
+    for (int id = 1; id <= 15; ++id)
+        live.push_back("A:" + std::to_string(id));
+    for (int id = 1; id <= 38; ++id)
+        live.push_back("S:" + std::to_string(10001 + (id - 1) * 4));
+    auto const liveProgressIndex = live.size();
+    live.insert(live.end(), progress.begin(), progress.end());
+    std::vector<std::string> personal = {"P:QC_COUNT:198", "P:SERVER_TIME:1792000000"};
+    for (int id = 1; id <= 198; ++id)
+        personal.push_back("C:" + std::to_string(30000 + id));
+    auto suffix = live;
+    suffix.insert(suffix.end(), personal.begin(), personal.end());
+    std::string const caps = "EVENTS,QUESTPOOLS,QUESTDISABLES,VALUES,RESETS,SCOURGE,KALUAK,WINTERGRASP,QUESTCONDITIONS";
+    std::string const token(32, 'T');
     auto const catalog = QuestieBridge::BuildSnapshotCatalog(std::string(64, 'B'), shared);
-    Require(catalog && catalog->RowCount == 1059, "representative catalog has 182 events, 159 pool rows and 718 disables");
-    auto const full = QuestieBridge::BuildSnapshotMessages("representative", 1, "EVENTS,QUESTPOOLS,QUESTDISABLES,VALUES", local, *catalog);
-    auto const reference = QuestieBridge::BuildSnapshotMessages("representative", 2, "EVENTS,QUESTPOOLS,QUESTDISABLES,VALUES", local, *catalog, true);
-    Require(full && reference, "representative production batches serialize");
+    auto const oldCatalog = QuestieBridge::BuildSnapshotCatalog(std::string(64, 'C'), oldShared);
+    Require(catalog && oldCatalog && catalog->RowCount == 1062,
+        "static catalog has 182 events, 161 pool mappings, 718 disables and one reset row");
+    auto const full = QuestieBridge::BuildSnapshotMessages(token, 1, caps, suffix, *catalog);
+    auto const oldFull = QuestieBridge::BuildSnapshotMessages(token, 1, caps, personal, *oldCatalog);
+    oldShared[oldProgressIndex] = "U:21:51";
+    auto const changedOldCatalog = QuestieBridge::BuildSnapshotCatalog(std::string(64, 'D'), oldShared);
+    suffix[liveProgressIndex] = "U:21:51";
+    Require(changedOldCatalog.has_value(), "changed protocol 21 catalog is serializable");
+    auto const oldSteady = QuestieBridge::BuildSnapshotMessages(token, 2, caps, personal, *changedOldCatalog);
+    auto const reference = QuestieBridge::BuildSnapshotMessages(token, 2, caps, suffix, *catalog, true);
+    Require(full && oldFull && oldSteady && reference, "both protocol traffic models serialize with production framing");
     auto bytes = [](std::vector<std::string> const& messages)
     {
         std::size_t total = 0;
         for (auto const& message : messages)
+        {
+            Require(message.size() <= 240, "traffic comparison obeys serialized message limits");
             total += message.size();
+        }
         return total;
     };
-    Require(reference->size() * 10 < full->size() && bytes(*reference) * 10 < bytes(*full),
-        "representative references reduce messages and payload bytes by over 90 percent");
-    std::cout << "Representative wire (1059 shared, 10 private): full " << full->size() << " messages/" << bytes(*full)
-        << " bytes; reference " << reference->size() << " messages/" << bytes(*reference) << " bytes\n";
-    for (std::size_t players : {10U, 50U, 100U, 500U})
-    {
-        std::size_t oldCopies = 0, oldSignatureRows = 0, revisionChecks = 0, newSignatureRows = 0;
-        for (std::size_t player = 0; player < players; ++player)
-        {
-            // Synthetic operation counts only, not a server timing benchmark.
-            oldCopies += shared.size();
-            oldSignatureRows += shared.size() + local.size();
-            ++revisionChecks;
-            newSignatureRows += local.size();
-        }
-        Require(oldCopies == players * 1059 && oldSignatureRows == players * 1069
-            && revisionChecks == players && newSignatureRows == players * 10,
-            "synthetic idle-check counts depend on shared revision and private rows only");
-        std::cout << "Synthetic idle checks (" << players << " players): old shared row copies=" << oldCopies
-            << ", old signature rows=" << oldSignatureRows << "; new revision checks=" << revisionChecks
-            << ", new private signature rows=" << newSignatureRows << '\n';
-    }
+    // 21 and 22 have equal-width version fields, so using the unchanged production
+    // framing for the historical rows yields the exact same modeled byte totals.
+    Require(reference->size() < oldSteady->size() && bytes(*reference) < bytes(*oldSteady),
+        "steady live changes avoid retransmitting the acknowledged static catalog");
+    constexpr std::size_t players = 1000;
+    std::cout << "Condition-heavy traffic model (1000 players; 182 E, 161 Q, 718 D; "
+        << "198 C plus count/server time = 200 personal rows; 15 A, 38 S; one U/R plus SC/KA/WG):\n"
+        << "  protocol 21 initial/full: " << players * oldFull->size() << " messages/"
+        << players * bytes(*oldFull) << " payload bytes; steady change: " << players * oldSteady->size()
+        << " messages/" << players * bytes(*oldSteady) << " payload bytes\n"
+        << "  protocol 22 initial/full: " << players * full->size() << " messages/"
+        << players * bytes(*full) << " payload bytes; steady change: " << players * reference->size()
+        << " messages/" << players * bytes(*reference) << " payload bytes\n";
 }
 
 void TestRefreshAndOwnership()
 {
     CommonStateCache cache;
     auto const start = StateClock::time_point{};
-    CommonState source{"EVENTS,HEARTBEAT", {"E:5:0:0:0"}, std::nullopt, false};
+    CommonState source{"EVENTS,HEARTBEAT", {"E:5:0:0"}, std::nullopt, false};
+    source.LiveRows = {"P:EVENT_COUNT:0"};
     int builds = 0;
     auto build = [&]() { ++builds; return source; };
     Require(cache.Get(start, 1, false, build).Rows == source.Rows, "initial state built");
     auto revision = cache.GetRevision();
-    source.Rows[0] = "E:5:0:0:1";
-    Require(cache.Get(start + 1s, 1, false, build).Rows[0] == "E:5:0:0:0",
+    auto const catalogRevision = cache.GetCatalogRevision();
+    source.LiveRows[0] = "P:EVENT_COUNT:1";
+    source.LiveRows.push_back("A:5");
+    Require(cache.Get(start + 1s, 1, false, build).LiveRows == std::vector<std::string>{"P:EVENT_COUNT:0"},
         "cache owns values rather than borrowed source references");
     Require(builds == 1, "intermediate tick must reuse cache");
-    Require(cache.Get(start + 2s, 1, false, build).Rows == source.Rows, "periodic change detected");
+    Require(cache.Get(start + 2s, 1, false, build).LiveRows == source.LiveRows, "periodic change detected");
     Require(builds == 2 && cache.GetRevision() != revision, "changed state advances revision");
+    Require(cache.GetCatalogRevision() == catalogRevision, "event activity does not change static catalog revision");
     revision = cache.GetRevision();
     cache.Get(start + 4s, 1, false, build);
     Require(builds == 3 && cache.GetRevision() == revision, "unchanged polling preserves revision");
@@ -446,7 +483,8 @@ void TestDirtyRequestsAndCapabilityReload()
     auto revision = cache.GetRevision();
     cache.Get(start + 100ms, 1, false, build);
     Require(builds == 1 && cache.GetRevision() == revision, "requests do not force shared rebuilding");
-    source.Rows = {"Q:13830:5676:1", "Q:13832:5676:0"};
+    source.Rows = {"Q:13830:5676", "Q:13832:5676"};
+    source.LiveRows = {"P:POOL_COUNT:1", "S:13830"};
     cache.Get(start + 200ms, 1, true, build);
     Require(builds == 2 && cache.GetRevision() != revision, "dirty event refreshes immediately");
     revision = cache.GetRevision();
@@ -465,6 +503,7 @@ void TestCatalogChanges()
     auto build = [&]() { return source; };
     cache.Get(start, 1, false, build);
     auto revision = cache.GetRevision();
+    auto const initialCatalogRevision = cache.GetCatalogRevision();
     source.ReputationRows.emplace();
     cache.Get(start + 2s, 1, false, build);
     Require(cache.GetRevision() != revision, "empty complete rate catalog differs from unavailable");
@@ -480,6 +519,8 @@ void TestCatalogChanges()
     source.ReportResets = true;
     cache.Get(start + 8s, 1, false, build);
     Require(cache.GetRevision() != revision, "reset reporting changes are observed");
+    Require(cache.GetCatalogRevision() == initialCatalogRevision,
+        "auxiliary player sampling catalogs do not invalidate unchanged wire Caps/Rows");
     revision = cache.GetRevision();
     source.Caps = "RESETS,HEARTBEAT";
     source.Rows = {"P:QUEST_RESETS:1792058400:1793527200"};
@@ -509,10 +550,162 @@ void TestPlayerChecks()
         "dirty state bypasses interval");
     Require(cache.ShouldCheckPlayer(start + 1s, start, revision, false, false, true),
         "initial/lost snapshot is rebuilt");
-    source.Rows = {"P:KA_FINISHED:1"};
+    source.LiveRows = {"P:KA_FINISHED:1"};
     cache.Get(start + 1s, 1, true, build);
     Require(cache.ShouldCheckPlayer(start + 1s, start, revision, false, false, false),
         "new common state reaches players checked recently");
+}
+
+void TestLiveAndCatalogRevisions()
+{
+    CommonStateCache cache;
+    auto const start = StateClock::time_point{};
+    CommonState source{"EVENTS,VALUES,QUESTPOOLS,WINTERGRASP,KALUAK,HEARTBEAT",
+        {"E:5:0:0", "Q:13830:5676", "Q:13832:5676", "D:20001"}, std::nullopt, false};
+    source.LiveRows = {"P:EVENT_COUNT:0", "P:POOL_COUNT:1", "S:13830", "U:21:50",
+        "R:13830:0", "P:WG_STATE:1:0:0", "P:KA_FINISHED:0", "P:SC_ACTIVE:0"};
+    auto const original = source;
+    int builds = 0;
+    auto build = [&]() { ++builds; return source; };
+    auto const first = cache.Get(start, 1, false, build);
+    auto revision = cache.GetRevision();
+    auto catalogRevision = cache.GetCatalogRevision();
+    auto now = start;
+    auto liveChange = [&]()
+    {
+        now += 100ms;
+        cache.Get(now, 1, true, build);
+        Require(cache.GetRevision() != revision, "every advertised live change advances common revision");
+        Require(cache.GetCatalogRevision() == catalogRevision, "live changes retain the static catalog revision");
+        Require(!cache.CanRenewPlayer(now, start, revision), "old common revision cannot authorize heartbeat renewal");
+        revision = cache.GetRevision();
+    };
+    source.LiveRows[0] = "P:EVENT_COUNT:1";
+    source.LiveRows.push_back("A:5");
+    liveChange();
+    source.LiveRows = original.LiveRows;
+    liveChange();
+    Require(first == original && cache.Get(now, 1, false, build) == original,
+        "false/true/false event revisits preserve the original owned catalog and complete false state");
+    source.LiveRows[3] = "U:21:51";
+    liveChange();
+    source.LiveRows[4] = "R:13830:1";
+    liveChange();
+    source.LiveRows[5] = "P:WG_STATE:1:1:1";
+    liveChange();
+    source.LiveRows[6] = "P:KA_FINISHED:1";
+    liveChange();
+    source.LiveRows[7] = "P:SC_ACTIVE:1";
+    liveChange();
+    source.LiveRows[2] = "S:13832";
+    liveChange();
+    auto const beforeDirtyBuilds = builds;
+    cache.Get(now + 1ms, 1, true, build);
+    Require(builds == beforeDirtyBuilds + 1 && cache.GetRevision() == revision
+        && cache.GetCatalogRevision() == catalogRevision, "dirty unchanged content rebuilds without advancing either revision");
+    auto catalogChange = [&]()
+    {
+        now += 100ms;
+        cache.Get(now, 1, true, build);
+        Require(cache.GetRevision() != revision && cache.GetCatalogRevision() != catalogRevision,
+            "structural catalog changes invalidate both revisions");
+        revision = cache.GetRevision();
+        catalogRevision = cache.GetCatalogRevision();
+    };
+    source.Rows[0] = "E:5:141:0";
+    catalogChange();
+    source.Rows[1] = "Q:13830:5677";
+    catalogChange();
+    source.Rows.pop_back();
+    catalogChange();
+    source.Caps += ",SCOURGE";
+    catalogChange();
+    source.Rows.push_back("P:QUEST_RESETS:1792058400:1793527200");
+    catalogChange();
+}
+
+void TestLiveDeliveryCoalescing()
+{
+    CommonStateCache cache;
+    auto const start = StateClock::time_point{};
+    CommonState source{"EVENTS,VALUES,QUESTDISABLES,HEARTBEAT", {"E:5:0:0"}, std::nullopt, false};
+    for (int id = 1; id <= 673; ++id)
+        source.Rows.push_back("D:" + std::to_string(20000 + id));
+    source.LiveRows = {"P:EVENT_COUNT:0", "U:21:0"};
+    auto build = [&]() { return source; };
+    cache.Get(start, 1, false, build);
+    auto encodedRevision = cache.GetCatalogRevision();
+    auto catalog = QuestieBridge::BuildSnapshotCatalog(std::string(64, 'A'), source.Rows);
+    Require(catalog.has_value(), "coalescing fixture has an owned static catalog");
+    auto const initial = QuestieBridge::BuildSnapshotMessages("initial", 1, source.Caps, source.LiveRows, *catalog);
+    Require(initial && initial->size() > 16, "initial batch spans many bounded updates");
+    auto const sampledRevision = cache.GetRevision();
+    std::vector<QuestieBridge::SnapshotDelivery> subscribers;
+    for (int player = 0; player < 1000; ++player)
+        subscribers.emplace_back(*initial, start);
+    std::vector<std::size_t> sent(subscribers.size());
+    std::size_t encodings = 1;
+    for (int tick = 1; tick <= 16; ++tick)
+    {
+        auto const now = start + tick * 100ms;
+        source.LiveRows[1] = "U:21:" + std::to_string(tick);
+        cache.Get(now, 1, true, build);
+        // Model the catalog owner's revision gate; delivery and renewal decisions
+        // below call production helpers, without reproducing the world update loop.
+        if (cache.GetCatalogRevision() != encodedRevision)
+        {
+            catalog = QuestieBridge::BuildSnapshotCatalog(std::string(64, 'B'), source.Rows);
+            encodedRevision = cache.GetCatalogRevision();
+            ++encodings;
+        }
+        Require(catalog.has_value(), "cached static catalog remains available");
+        for (std::size_t player = 0; player < subscribers.size(); ++player)
+        {
+            Require(subscribers[player].CanContinue(now, std::string(64, 'A'), catalog->Id),
+                "continuous live changes cannot cancel an unexpired batch with matching catalog identity");
+            subscribers[player].Dispatch(1, [&](std::string const& message)
+            {
+                Require(message == (*initial)[sent[player]++], "live updates cannot mix rows into an in-flight batch");
+            });
+            Require(!cache.CanRenewPlayer(now, start, sampledRevision),
+                "in-flight sampled revision cannot heartbeat over newer common state");
+        }
+    }
+    Require(encodings == 1, "1000 modeled subscribers reuse one catalog across continuous live changes");
+    for (std::size_t player = 0; player < subscribers.size(); ++player)
+    {
+        auto& delivery = subscribers[player];
+        delivery.Dispatch(initial->size(), [&](std::string const& message)
+        {
+            Require(message == (*initial)[sent[player]++], "pending batch finishes its original snapshot in order");
+        });
+        Require(delivery.Complete() && sent[player] == initial->size(), "all modeled subscribers complete the original batch");
+    }
+    auto const latest = QuestieBridge::BuildSnapshotMessages("latest", 2, source.Caps, source.LiveRows, *catalog, true);
+    Require(latest && BeginFields(*latest)[8] == "R" && BeginFields(*latest)[5] == "2",
+        "next snapshot references the retained catalog and contains only the latest live rows");
+    QuestieBridge::SnapshotDelivery replacement(*latest, start + 1700ms);
+    std::vector<std::string> delivered;
+    replacement.Dispatch(latest->size(), [&](auto const& message) { delivered.push_back(message); });
+    Require(replacement.Complete() && delivered == *latest, "coalesced latest snapshot completes through actual delivery");
+    Require(!cache.CanRenewPlayer(start + 1800ms, start, sampledRevision)
+        && cache.CanRenewPlayer(start + 1800ms, start + 1600ms, cache.GetRevision()),
+        "renewal requires verification of the latest sampled common revision after old batch completion");
+    auto const unchangedRevision = cache.GetRevision();
+    cache.Get(start + 1800ms, 1, true, build);
+    Require(cache.GetRevision() == unchangedRevision && cache.GetCatalogRevision() == encodedRevision && encodings == 1,
+        "unchanged refresh does not require another catalog encoding");
+    Require(subscribers[0].CanContinue(start + 3999ms, catalog->Id, catalog->Id)
+        && !subscribers[0].CanContinue(start + 4s, catalog->Id, catalog->Id),
+        "continuous live updates retain the original four-second deadline");
+    source.Rows[0] = "E:5:141:0";
+    cache.Get(start + 1900ms, 1, true, build);
+    Require(cache.GetCatalogRevision() != encodedRevision, "event metadata change requires a new catalog");
+    auto const changed = QuestieBridge::BuildSnapshotCatalog(std::string(64, 'B'), source.Rows);
+    QuestieBridge::SnapshotDelivery structural(*latest, start + 1700ms);
+    Require(changed && !structural.CanContinue(start + 1900ms, catalog->Id, changed->Id),
+        "catalog identity mismatch cancels even a recent pending batch");
+    std::cout << "Modeled live delivery: 1000 subscribers, 16 live changes, one static catalog encoding\n";
 }
 
 void TestAckRenewals()
@@ -535,7 +728,7 @@ void TestAckRenewals()
     Require(builds == 1, "1000 matching idle ACKs share one existing common sample");
     Require(!cache.CanRenewPlayer(start + 2s, start, revision), "ACK cannot renew overdue player state");
     Require(!cache.CanRenewPlayer(start + 1s, start, revision + 1), "ACK cannot renew an unmatched common revision");
-    source.Rows = {"E:5:0:0:1"};
+    source.LiveRows = {"P:EVENT_COUNT:1", "A:5"};
     cache.Get(start + 1s, 1, true, build);
     Require(!cache.CanRenewPlayer(start + 1s, start, revision), "changed shared state requires player verification");
     cache.Reset();
@@ -680,14 +873,14 @@ void TestQuestgiverCatalog()
     auto const revision = cache.GetRevision();
     for (int player = 0; player < 1000; ++player)
     {
-        std::vector<std::string> rows(4091, "E:1:0:0:0");
+        std::vector<std::string> rows(4091, "E:1:0:0");
         std::string caps = "QUESTGIVERS";
         Require(common.AppendGiverTemplates(rows, caps, 3), "complete catalog fits exact row boundary");
         Require(rows.size() == 4093 && rows.back() == "N:823", "every player receives the complete shared catalog");
         Require(caps == "QUESTGIVERS,QUESTGIVERTEMPLATES", "only complete catalogs advertise authority");
     }
     Require(builds == 1 && common.RestrictedGiverTemplates.contains(823), "global catalog shared across players");
-    std::vector<std::string> rows(4092, "E:1:0:0:0");
+    std::vector<std::string> rows(4092, "E:1:0:0");
     auto const before = rows;
     std::string caps = "QUESTGIVERS";
     Require(!common.AppendGiverTemplates(rows, caps, 3) && rows == before && caps == "QUESTGIVERS",
@@ -865,6 +1058,8 @@ int main()
         TestDirtyRequestsAndCapabilityReload();
         TestCatalogChanges();
         TestPlayerChecks();
+        TestLiveAndCatalogRevisions();
+        TestLiveDeliveryCoalescing();
         TestAckRenewals();
         TestSubscriberScheduling();
         TestSnapshotDelivery();
@@ -877,7 +1072,7 @@ int main()
         TestSnapshotCatalogs();
         TestCatalogWireReduction();
         TestQuestConditions();
-        std::cout << "Common state cache, conditions, delivery and protocol: 16 regression groups passed\n";
+        std::cout << "Common state cache, conditions, delivery and protocol: 18 regression groups passed\n";
         return 0;
     }
     catch (std::exception const& error)

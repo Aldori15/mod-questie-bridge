@@ -9,6 +9,7 @@
 #include <chrono>
 #include <cstddef>
 #include <string>
+#include <string_view>
 #include <utility>
 #include <vector>
 
@@ -23,6 +24,10 @@ public:
         : _messages(std::move(messages)), _created(now) { }
 
     bool Expired(Clock::time_point now) const { return now - _created >= std::chrono::seconds(4); }
+    bool CanContinue(Clock::time_point now, std::string_view queuedCatalog, std::string_view currentCatalog) const
+    {
+        return !Expired(now) && queuedCatalog == currentCatalog;
+    }
     bool Complete() const { return _next == _messages.size(); }
     std::size_t Remaining() const { return _messages.size() - _next; }
 

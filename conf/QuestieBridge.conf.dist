@@ -22,7 +22,7 @@ QuestieBridge.MaxMessagesPerUpdate = 256
 # Aggregate timing and traffic logs once per minute; disabled by default.
 QuestieBridge.PerformanceLogging = 0
 
-# Complete catalog of valid game events with live activity and holiday main stages.
+# All valid game events and holiday main stages, with separate live activity updates.
 # Includes GM starts/stops and non-holiday events such as Quel'Danas unlocks.
 QuestieBridge.Events = 1
 

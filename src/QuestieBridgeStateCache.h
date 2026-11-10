@@ -40,6 +40,7 @@ struct CommonState
     std::set<std::uint32_t> PatrolEntries = {};
     std::set<std::uint32_t> RestrictedGiverTemplates = {};
     std::optional<std::vector<std::string>> GiverTemplateRows = std::nullopt;
+    std::vector<std::string> LiveRows = {};
 
     bool AppendGiverTemplates(std::vector<std::string>& rows, std::string& caps, std::size_t reserved) const
     {
@@ -91,6 +92,8 @@ public:
             || now - _lastRefresh >= StateCheckInterval)
         {
             auto state = std::forward<Builder>(builder)();
+            if (!_state || _state->Caps != state.Caps || _state->Rows != state.Rows)
+                ++_catalogRevision;
             if (!_state || capabilities != _capabilities || *_state != state)
                 ++_revision;
             _state = std::move(state);
@@ -108,6 +111,7 @@ public:
     }
 
     std::uint64_t GetRevision() const { return _revision; }
+    std::uint64_t GetCatalogRevision() const { return _catalogRevision; }
 
     bool CanRenewPlayer(StateClock::time_point now, StateClock::time_point lastCheck,
         std::uint64_t revision) const
@@ -122,6 +126,7 @@ private:
     StateClock::time_point _lastRefresh{};
     std::uint32_t _capabilities = 0;
     std::uint64_t _revision = 0;
+    std::uint64_t _catalogRevision = 0;
 };
 }
 

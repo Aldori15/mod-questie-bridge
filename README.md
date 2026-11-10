@@ -92,7 +92,8 @@ Phase timings overlap; use `updates` for total bridge time.
 ## Behavior
 
 Changes normally appear within a few seconds. Rehover or reopen reward displays to refresh them.
-Shared catalogs are cached; player-specific changes send smaller complete updates.
+Stable catalogs are cached; event activity, progress, pool selections, and player-specific
+changes send smaller complete updates without retransmitting the catalog.
 Matching ACKs renew subscriptions without forcing state rebuilding. Regular verification still runs.
 NPC sampling visits the player's visible objects, with positions and visibility checked individually.
 Rate changes through `.reload config` and `.reload reputation_reward_rate` need no addon reload
@@ -130,16 +131,16 @@ Unsupported expressions or missing, expired, incomplete, or oversized data keep 
 
 ## Protocol
 
-Protocol **21** requires a matching addon. `INFO~1` remains the independent version
+Protocol **22** requires a matching addon. `INFO~1` remains the independent version
 diagnostic handshake; a mismatch restores static addon behavior without downgrading.
 
 Snapshots retain `BEGIN` / `PART` / `END`, with compact capabilities in the same field:
 
 ```text
-WATCH~21~token~worldstateIds~knownCatalogIdOrDash
-BEGIN~21~token~sequence~mask~wireRowCount~partCount~catalogId~catalogRowsOrR
-PART~21~token~sequence~partIndex~row;row;...
-END~21~token~sequence
+WATCH~22~token~worldstateIds~knownCatalogIdOrDash
+BEGIN~22~token~sequence~mask~wireRowCount~partCount~catalogId~catalogRowsOrR
+PART~22~token~sequence~partIndex~row;row;...
+END~22~token~sequence
 ```
 
 The mask contains one to four uppercase, eight-digit hexadecimal 32-bit words,
@@ -177,11 +178,24 @@ A numeric `catalogRowsOrR` declares the shared prefix of a full batch; `R` reuse
 The client publishes only complete validated replacements. Unknown references request a resync.
 `WATCH` may advertise a fresh catalog across zone transitions; `-` requests full data, also used if the hint exceeds 240 bytes.
 
+The catalog contains only event definitions (`E:eventId:holidayId:mainStage`), quest-pool
+membership (`Q:questId:poolId`), disabled quests (`D:questId`), and `P:QUEST_RESETS`.
+The live suffix contains a complete current selection: `P:EVENT_COUNT:n` plus `n` unique
+`A:eventId` rows, and `P:POOL_COUNT:n` plus `n` unique `S:questId` rows. Each count is
+required when its capability is enabled, including zero; every selected ID must exist
+in the catalog. Unselected catalog members are inactive only after full validation.
+Progress (`U`), Wintergrasp quest gates (`R`), `SC_ACTIVE`, `WG_STATE`, and `KA_FINISHED`
+are live rows, alongside the existing player-specific records. Each accepted snapshot
+replaces all live state; partial updates never modify cached catalogs or renew freshness.
+Pending snapshots may finish across live changes within their existing delivery deadline;
+the next update samples the latest state. Catalog changes and config/template reloads
+invalidate pending work.
+
 `QUESTCONDITIONS` requires exactly one `P:QC_COUNT:<count>` row plus that many unique
 `C:<questId>` rows, limited to 512 quests. These are negative restrictions only; a zero count grants nothing.
 Catalog overflow or insufficient snapshot space omits the capability rather than sending a partial catalog.
 
-Heartbeats (`ALIVE~21~token~sequence~snapshotSequence`) renew only an already fresh, complete snapshot.
+Heartbeats (`ALIVE~22~token~sequence~snapshotSequence`) renew only an already fresh, complete snapshot.
 Patrol batches are sequenced separately; samples expire after five seconds and never renew quest-state freshness.
 `INFO~1` diagnoses versions without establishing or renewing availability state.
 

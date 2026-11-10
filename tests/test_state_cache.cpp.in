@@ -557,6 +557,73 @@ void TestPlayerChecks()
         "new common state reaches players checked recently");
 }
 
+void TestPlayerSignatures()
+{
+    CommonStateCache cache;
+    auto const start = StateClock::time_point{};
+    CommonState source{"EVENTS,HEARTBEAT", {"E:33:0:0"}, std::nullopt, false};
+    source.LiveRows = {"P:EVENT_COUNT:1", "A:33", "U:3426:1"};
+    auto build = [&]() { return source; };
+    cache.Get(start, 1, false, build);
+    std::string caps = source.Caps + ",VALUES,QUESTGIVERS,QUELDANAS";
+    std::vector<std::string> personal = {"W:198:1", "P:QG_CONTEXT:0:12", "G:823:79942:0:F130000337013846"};
+    auto signature = [&]()
+    {
+        auto rows = source.LiveRows;
+        rows.insert(rows.end(), personal.begin(), personal.end());
+        auto const before = rows;
+        auto const result = cache.BuildPlayerSignature(caps,
+            std::span<std::string const>(rows).subspan(source.LiveRows.size()));
+        Require(rows == before, "signature construction preserves the complete wire rows");
+        Require(result.find(";P:EVENT_COUNT:") == std::string::npos
+            && result.find(";A:33") == std::string::npos && result.find(";U:3426:") == std::string::npos,
+            "common revision replaces shared live row text in player signatures");
+        auto const catalog = QuestieBridge::BuildSnapshotCatalog(std::string(64, 'A'), source.Rows);
+        Require(catalog.has_value(), "signature fixture has a complete static catalog");
+        auto const messages = QuestieBridge::BuildSnapshotMessages("signature", 1, caps, rows, *catalog, true);
+        Require(messages.has_value(), "signature optimization retains serializable complete snapshots");
+        std::string wire;
+        for (auto const& message : *messages)
+            wire += message;
+        for (auto const& row : source.LiveRows)
+            Require(wire.find(row) != std::string::npos, "shared live rows still reach the wire");
+        for (auto const& row : personal)
+            Require(result.find(';' + row) != std::string::npos, "personal rows remain in the signature");
+        return result;
+    };
+    auto previous = signature();
+    cache.Get(start + 2s, 1, false, build);
+    Require(signature() == previous, "unchanged state does not request an unnecessary snapshot");
+    source.LiveRows[2] = "U:3426:2";
+    cache.Get(start + 3s, 1, true, build);
+    auto current = signature();
+    Require(current != previous, "shared progress changes still trigger a snapshot through common revision");
+    previous = current;
+    source.LiveRows = {"P:EVENT_COUNT:0", "U:3426:2"};
+    cache.Get(start + 4s, 1, true, build);
+    current = signature();
+    Require(current != previous, "clearing shared event selections still triggers a snapshot");
+    previous = current;
+    personal[0] = "W:198:2";
+    current = signature();
+    Require(current != previous, "personal state changes trigger snapshots without a shared revision change");
+    previous = current;
+    personal.pop_back();
+    current = signature();
+    Require(current != previous, "removing a private observation changes the signature");
+    previous = current;
+    caps = "EVENTS,VALUES,QUESTGIVERS,QUELDANAS";
+    current = signature();
+    Require(current != previous, "capability changes trigger snapshots even with identical rows");
+    previous = current;
+    source.LiveRows.clear();
+    source.Rows.clear();
+    source.Caps = caps = "HEARTBEAT";
+    personal.clear();
+    cache.Get(start + 5s, 2, true, build);
+    Require(signature() != previous, "an empty shared prefix remains valid after capability removal");
+}
+
 void TestLiveAndCatalogRevisions()
 {
     CommonStateCache cache;
@@ -1060,6 +1127,7 @@ int main()
         TestCatalogChanges();
         TestPlayerChecks();
         TestLiveAndCatalogRevisions();
+        TestPlayerSignatures();
         TestLiveDeliveryCoalescing();
         TestAckRenewals();
         TestSubscriberScheduling();
@@ -1073,7 +1141,7 @@ int main()
         TestSnapshotCatalogs();
         TestCatalogWireReduction();
         TestQuestConditions();
-        std::cout << "Common state cache, conditions, delivery and protocol: 18 regression groups passed\n";
+        std::cout << "Common state cache, conditions, delivery and protocol: 19 regression groups passed\n";
         return 0;
     }
     catch (std::exception const& error)

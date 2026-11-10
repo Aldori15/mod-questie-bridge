@@ -713,9 +713,8 @@ public:
                             return !quest || player->SatisfyQuestConditions(quest, false);
                         }, rows, playerCaps, sharedRows + (common.ReportResets ? 1 : 0));
                 }
-                std::string signature = std::to_string(_commonState.GetRevision()) + ':' + playerCaps;
-                for (std::string const& row : rows)
-                    signature += ';' + row;
+                std::string signature = _commonState.BuildPlayerSignature(playerCaps,
+                    std::span<std::string const>(rows).subspan(common.LiveRows.size()));
                 bool const changed = signature != subscriber.Previous;
                 if (changed || subscriber.ReplyRequested)
                 {

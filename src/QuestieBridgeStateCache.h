@@ -10,6 +10,7 @@
 #include <cstdint>
 #include <optional>
 #include <set>
+#include <span>
 #include <string>
 #include <utility>
 #include <vector>
@@ -112,6 +113,14 @@ public:
 
     std::uint64_t GetRevision() const { return _revision; }
     std::uint64_t GetCatalogRevision() const { return _catalogRevision; }
+
+    std::string BuildPlayerSignature(std::string const& caps, std::span<std::string const> personalRows) const
+    {
+        std::string signature = std::to_string(_revision) + ':' + caps;
+        for (auto const& row : personalRows)
+            signature += ';' + row;
+        return signature;
+    }
 
     bool CanRenewPlayer(StateClock::time_point now, StateClock::time_point lastCheck,
         std::uint64_t revision) const

@@ -20,6 +20,8 @@ using namespace std::chrono_literals;
 using QuestieBridge::CommonState;
 using QuestieBridge::CommonStateCache;
 using QuestieBridge::StateClock;
+constexpr std::uint32_t ExpectedProtocolVersion = 22;
+std::string const Protocol = std::to_string(ExpectedProtocolVersion);
 
 void Require(bool condition, char const* message)
 {
@@ -259,22 +261,22 @@ void TestSnapshotEncoding()
     auto const full = BuildSnapshotMessages(token, sequence, all, std::vector<std::string>(4096, std::string(36, 'x')));
     Require(full && full->size() == 1026, "maximum rows and parts form one complete batch");
     std::string const emptyCatalogId(64, '0');
-    Require(QuestieBridge::ProtocolVersion == 22, "stable catalogs require protocol 22");
-    Require(full->front() == "BEGIN~22~" + token + "~9007199254740991~0007FFFF~4096~1024~" + emptyCatalogId + "~0",
+    Require(QuestieBridge::ProtocolVersion == ExpectedProtocolVersion, "bridge protocol matches the fixture contract");
+    Require(full->front() == "BEGIN~" + Protocol + "~" + token + "~9007199254740991~0007FFFF~4096~1024~" + emptyCatalogId + "~0",
         "maximum BEGIN carries compact capabilities and catalog metadata");
-    Require(full->front().size() == 144, "maximum current BEGIN leaves 96 bytes of headroom");
-    std::string const futureBegin = "BEGIN~22~" + token + "~9007199254740991~"
+    Require(full->front().size() == 142 + Protocol.size(), "maximum current BEGIN size tracks the protocol digits");
+    std::string const futureBegin = "BEGIN~" + Protocol + "~" + token + "~9007199254740991~"
         + QuestieBridge::EncodeCapabilityMask({0xFFFFFFFFU, 0xFFFFFFFFU, 0xFFFFFFFFU, 0xFFFFFFFFU})
         + "~4096~1024~" + emptyCatalogId + "~0";
-    Require(futureBegin.size() == 171, "future four-word capability mask still fits the payload limit");
-    Require(full->back() == "END~22~" + token + "~9007199254740991", "END retains the snapshot anchor");
+    Require(futureBegin.size() == 169 + Protocol.size(), "future four-word capability mask still fits the payload limit");
+    Require(full->back() == "END~" + Protocol + "~" + token + "~9007199254740991", "END retains the snapshot anchor");
     for (auto const& message : *full)
         Require(message.size() <= 240, "every serialized message obeys the payload limit");
     auto const empty = BuildSnapshotMessages("t", 1, "", {});
-    Require(empty && *empty == std::vector<std::string>{"BEGIN~22~t~1~00000000~0~0~" + emptyCatalogId + "~0", "END~22~t~1"},
+    Require(empty && *empty == std::vector<std::string>{"BEGIN~" + Protocol + "~t~1~00000000~0~0~" + emptyCatalogId + "~0", "END~" + Protocol + "~t~1"},
         "empty snapshots remain complete and atomic");
     auto const packed = BuildSnapshotMessages("t", 2, "EVENTS,HEARTBEAT", {"E:1:0:0", "E:2:0:0"});
-    Require(packed && (*packed)[1] == "PART~22~t~2~1~E:1:0:0;E:2:0:0", "multipart row encoding is unchanged");
+    Require(packed && (*packed)[1] == "PART~" + Protocol + "~t~2~1~E:1:0:0;E:2:0:0", "multipart row encoding is unchanged");
     Require(BuildSnapshotMessages(token, sequence, "HEARTBEAT", {std::string(150, 'x')}).has_value(),
         "maximum part body fits with the longest token and sequence");
     Require(!BuildSnapshotMessages(token, sequence, "HEARTBEAT", {std::string(151, 'x')}),
@@ -318,15 +320,15 @@ void TestSnapshotCatalogs()
     Require(full && reference, "full and reference snapshots serialize through production helpers");
     auto const fullFields = BeginFields(*full);
     auto const refFields = BeginFields(*reference);
-    Require(fullFields.size() == 9 && refFields.size() == 9, "protocol 22 BEGIN has nine fields");
+    Require(fullFields.size() == 9 && refFields.size() == 9, "BEGIN has nine fields");
     Require(fullFields[5] == "3" && fullFields[6] == "2" && fullFields[7] == id && fullFields[8] == "2",
         "full BEGIN reports transmitted rows, parts, identity and shared prefix length");
     Require(refFields[5] == "1" && refFields[6] == "1" && refFields[7] == id && refFields[8] == "R",
         "reference BEGIN reports only private transmission and names the catalog");
     Require(std::stoull(fullFields[5]) == std::stoull(refFields[5]) + catalog->RowCount,
         "full and reference batches resolve to the same effective row count");
-    Require((*full)[1] == "PART~22~t~1~1~E:1:0:0;Q:13830:5676"
-        && (*full)[2] == "PART~22~t~1~2~P:LOCAL:1" && (*reference)[1] == "PART~22~t~2~1~P:LOCAL:1",
+    Require((*full)[1] == "PART~" + Protocol + "~t~1~1~E:1:0:0;Q:13830:5676"
+        && (*full)[2] == "PART~" + Protocol + "~t~1~2~P:LOCAL:1" && (*reference)[1] == "PART~" + Protocol + "~t~2~1~P:LOCAL:1",
         "full batches send shared prefix first and references omit it");
     auto const noLocal = BuildSnapshotMessages("t", 3, "EVENTS", {}, *catalog, true);
     Require(noLocal && noLocal->size() == 2 && BeginFields(*noLocal)[5] == "0"
@@ -373,7 +375,7 @@ void TestCatalogWireReduction()
     // Deterministic payload model, not a benchmark: identical framing, a fixed
     // 32-character token, sequences 1/2, and 200 personal rows per subscriber.
     // Protocol 21 invalidates its shared catalog on one live progress change;
-    // protocol 22 retains the static catalog already acknowledged by all players.
+    // the current protocol retains the static catalog already acknowledged by all players.
     std::vector<std::string> oldShared, shared;
     for (int id = 1; id <= 182; ++id)
     {
@@ -433,17 +435,16 @@ void TestCatalogWireReduction()
         }
         return total;
     };
-    // 21 and 22 have equal-width version fields, so using the unchanged production
-    // framing for the historical rows yields the exact same modeled byte totals.
+    // Encode both catalog layouts with the current framing to isolate reuse savings.
     Require(reference->size() < oldSteady->size() && bytes(*reference) < bytes(*oldSteady),
         "steady live changes avoid retransmitting the acknowledged static catalog");
     constexpr std::size_t players = 1000;
     std::cout << "Condition-heavy traffic model (1000 players; 182 E, 161 Q, 718 D; "
         << "198 C plus count/server time = 200 personal rows; 15 A, 38 S; one U/R plus SC/KA/WG):\n"
-        << "  protocol 21 initial/full: " << players * oldFull->size() << " messages/"
+        << "  legacy catalog initial/full: " << players * oldFull->size() << " messages/"
         << players * bytes(*oldFull) << " payload bytes; steady change: " << players * oldSteady->size()
         << " messages/" << players * bytes(*oldSteady) << " payload bytes\n"
-        << "  protocol 22 initial/full: " << players * full->size() << " messages/"
+        << "  stable catalog initial/full: " << players * full->size() << " messages/"
         << players * bytes(*full) << " payload bytes; steady change: " << players * reference->size()
         << " messages/" << players * bytes(*reference) << " payload bytes\n";
 }
